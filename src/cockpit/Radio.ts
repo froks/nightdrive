@@ -49,6 +49,8 @@ export class Radio {
   private door = liveCanvas(960, 352);
   private buttons = new Map<RadioAction, { mesh: THREE.Mesh; baseZ: number; until: number }>();
   private presetLeds: THREE.MeshBasicMaterial[] = [];
+  /** backlight level of the button LEDs (DIM switch) */
+  brightness = 1;
   private tapeLed!: THREE.MeshBasicMaterial;
   private knob: THREE.Group;
 
@@ -121,6 +123,7 @@ export class Radio {
       this.buttons.set(b.action, { mesh, baseZ, until: 0 });
       if (b.action.startsWith('preset') || b.action === 'eject') {
         const ledMat = new THREE.MeshBasicMaterial({ color: 0x050805, fog: false });
+        ledMat.userData.dynamic = true; // colour set every frame, dimmed via `brightness`
         const led = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.0035, 0.002), ledMat);
         led.position.set(b.x, ROW_Y + 0.022, FRONT + 0.001);
         g.add(led);
@@ -166,10 +169,10 @@ export class Radio {
     // LEDs & knob
     for (let i = 0; i < 5; i++) {
       const on = p.mode === 'radio' && p.stationIndex === i;
-      this.presetLeds[i].color.setRGB(on ? 0.4 : 0.03, on ? 3 : 0.05, on ? 1.2 : 0.03);
+      this.presetLeds[i].color.setRGB(on ? 0.4 : 0.03, on ? 3 : 0.05, on ? 1.2 : 0.03).multiplyScalar(this.brightness);
     }
     const tapeOn = p.mode === 'tape';
-    this.tapeLed.color.setRGB(tapeOn ? 3 : 0.05, tapeOn ? 1.2 : 0.03, tapeOn ? 0.2 : 0.02);
+    this.tapeLed.color.setRGB(tapeOn ? 3 : 0.05, tapeOn ? 1.2 : 0.03, tapeOn ? 0.2 : 0.02).multiplyScalar(this.brightness);
     this.knob.rotation.z = -(p.volume - 0.5) * 4.4;
 
     if (p.status === 'playing' && p.mode === 'tape') this.reel += dt * 2.2;

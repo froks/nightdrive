@@ -49,6 +49,40 @@ class Builder {
 /* ------------------------------------------------------------------ */
 /* Road surface shader: dark wet asphalt with street-lamp light pools   */
 /* ------------------------------------------------------------------ */
+/**
+ * Lamp heads: HDR vertex colours like the neon material, plus a brightness
+ * level and a distance fade. Far away the 16 cm tall heads shrink to ~1 px and
+ * shimmer between frames (bloom amplifies it), so they fade out from 60 to
+ * 110 m and the size-stable glow points carry the light from there.
+ */
+function lampHeadMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uLevel: { value: 1 } }]),
+    fog: true,
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */`
+      attribute vec3 color;
+      varying vec3 vColor;
+      varying float vDepth;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vDepth = -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform vec3 fogColor;
+      uniform float fogDensity, uLevel;
+      varying vec3 vColor;
+      varying float vDepth;
+      void main() {
+        vec3 c = vColor * uLevel * (1.0 - smoothstep(60.0, 110.0, vDepth));
+        float fog = 1.0 - exp(-fogDensity * fogDensity * vDepth * vDepth);
+        gl_FragColor = vec4(mix(c, fogColor, fog * 0.6), 1.0);
+      }`,
+  });
+}
+
 function roadMaterial(p: ScenePreset) {
   return new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
@@ -113,10 +147,15 @@ export class ChunkManager {
     terrain: THREE.MeshLambertMaterial;
     dark: THREE.MeshLambertMaterial;
     neon: THREE.MeshBasicMaterial;
+    /** lamp heads (own material so street lights can be dimmed without the road lines) */
+    lampHead: THREE.ShaderMaterial;
+    /** lamp light cones + wet-road reflections */
     add: THREE.MeshBasicMaterial;
     glow: THREE.ShaderMaterial;
   };
   private p!: ScenePreset;
+  private lampLevel = 1;
+  private lampBase = new THREE.Color();
 
   constructor(private track: Track, preset: ScenePreset) {
     this.setPreset(preset);
@@ -132,9 +171,22 @@ export class ChunkManager {
       terrain: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
       dark: new THREE.MeshLambertMaterial({ color: 0x07080d }),
       neon: neonMaterial(),
+      lampHead: lampHeadMaterial(),
       add: additiveMaterial(),
       glow: glowPointsMaterial(p.lamps.glow, 1.6, 5),
     };
+    this.lampBase = this.mats.glow.uniforms.uColor.value.clone();
+    this.setLampLevel(this.lampLevel);
+  }
+
+  /** Street light brightness multiplier (heads, glows, cones, reflections, pools on the road). */
+  setLampLevel(k: number) {
+    this.lampLevel = k;
+    const m = this.mats;
+    m.lampHead.uniforms.uLevel.value = k;
+    m.add.color.setScalar(k);
+    m.glow.uniforms.uColor.value.copy(this.lampBase).multiplyScalar(k);
+    m.road.uniforms.uLamps.value = (this.p.lamps.enabled ? 1 : 0) * k;
   }
 
   update(pos: number, origin: THREE.Vector3) {
@@ -227,6 +279,7 @@ export class ChunkManager {
     /* ---------- props: lamps, reflector posts ---------- */
     const dark: THREE.BufferGeometry[] = [];
     const neonParts: THREE.BufferGeometry[] = [];
+    const headParts: THREE.BufferGeometry[] = [];
     const addParts: THREE.BufferGeometry[] = [];
     const glowPts: THREE.Vector3[] = [];
     const m4 = new THREE.Matrix4();
@@ -252,7 +305,7 @@ export class ChunkManager {
           const armLen = ROAD.POLE_L - ROAD.HEAD_L + 0.3;
           const arm = new THREE.BoxGeometry(armLen, 0.14, 0.16).translate(side * (ROAD.HEAD_L + armLen / 2 - 0.15), 9.5, 0);
           dark.push(pole.applyMatrix4(M), arm.applyMatrix4(M));
-          neonParts.push(stripAttrs(colorize(new THREE.BoxGeometry(1.3, 0.16, 0.5).translate(side * ROAD.HEAD_L, 9.36, 0), p.lamps.head)).applyMatrix4(M));
+          headParts.push(stripAttrs(colorize(new THREE.BoxGeometry(1.3, 0.16, 0.5).translate(side * ROAD.HEAD_L, 9.36, 0), p.lamps.head)).applyMatrix4(M));
 
           // light cone (brighter at top)
           const cone = new THREE.ConeGeometry(3.4, 9.2, 18, 1, true).translate(side * ROAD.HEAD_L, 4.65, 0);
@@ -293,6 +346,7 @@ export class ChunkManager {
     }
     if (!neon.empty) neonParts.push(neon.geometry());
     group.add(new THREE.Mesh(mergeGeometries(neonParts.map(g => g.index ? g : g)), this.mats.neon));
+    if (headParts.length) group.add(new THREE.Mesh(mergeGeometries(headParts), this.mats.lampHead));
     if (dark.length) group.add(new THREE.Mesh(mergeGeometries(dark), this.mats.dark));
     if (addParts.length) {
       const m = new THREE.Mesh(mergeGeometries(addParts), this.mats.add);

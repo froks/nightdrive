@@ -23,6 +23,8 @@ export class Sky {
     uGlowDir: { value: new THREE.Vector3(0, 0, -1) },
     uStarRot: { value: new THREE.Matrix3() },
     uStarBright: { value: 1 },
+    /** 0..1 night mode (DIM switch) */
+    uDim: { value: 0 },
     uTime: { value: 0 },
   };
   private galaxy: THREE.Mesh;
@@ -44,7 +46,7 @@ export class Sky {
         }`,
       fragmentShader: /* glsl */`
         uniform vec3 uZenith, uMid, uHorizon, uGlow, uGlowDir;
-        uniform float uGlowStrength, uStarBright, uTime;
+        uniform float uGlowStrength, uStarBright, uTime, uDim;
         uniform mat3 uStarRot;
         varying vec3 vDir;
 
@@ -76,10 +78,11 @@ export class Sky {
           col = mix(col, uZenith, smoothstep(0.22, 0.9, e));
           float band = 1.0 - smoothstep(0.0, 0.09, abs(e));
           float g = pow(max(dot(normalize(vec3(d.x, 0.0, d.z)), uGlowDir), 0.0), 10.0) * (1.0 - smoothstep(0.0, 0.3, abs(e)));
-          col += uGlow * (g * 0.9 + band * 0.25) * uGlowStrength;
+          col += uGlow * (g * 0.9 + band * 0.25) * uGlowStrength * (1.0 - 0.7 * uDim);
+          col *= 1.0 - 0.55 * uDim;
           vec3 sd = uStarRot * d;
           vec3 st = starLayer(sd, 150.0, 0.10) + starLayer(sd, 320.0, 0.07) * 0.8 + starLayer(sd, 640.0, 0.06) * 0.55;
-          col += st * smoothstep(-0.01, 0.12, e) * uStarBright;
+          col += st * smoothstep(-0.01, 0.12, e) * uStarBright * (1.0 - 0.75 * uDim);
           if (e < 0.0) col = mix(uHorizon, uHorizon * 0.4, smoothstep(0.0, 0.2, -e));
           gl_FragColor = vec4(col, 1.0);
         }`,
@@ -120,6 +123,12 @@ export class Sky {
    * @param skyYaw yaw the star field / galaxy is anchored to
    * @param roadDir horizontal direction to the road's vanishing point (world)
    */
+  /** DIM switch: 0 = normal, 1 = dimmed night sky. */
+  setDim(d: number) {
+    this.uniforms.uDim.value = d;
+    (this.galaxy.material as THREE.MeshBasicMaterial).color.setScalar(0.6 * (1 - 0.8 * d));
+  }
+
   update(camPos: THREE.Vector3, skyYaw: number, roadDir: THREE.Vector3, t: number, dt: number) {
     this.group.position.copy(camPos);
     this.drift += this.p.sky.starDrift * dt;

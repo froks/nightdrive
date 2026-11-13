@@ -15,6 +15,7 @@ npm run build     # static site in dist/ (serve it with any static server)
 | `F` / double-click | fullscreen |
 | `N` / WASH switch | next scene (washer sweep + fade) |
 | `R` / WIPE switch | toggle rain (wipers run while it rains) |
+| `D` / DIM switch | dim the night sky and street lights |
 | INFO switch | open the current station's website |
 | `M` | toggle VHS post-fx |
 | `G` | trigger a glitch |

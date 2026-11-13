@@ -170,6 +170,21 @@ function update(dt: number) {
   sim.glitch = Math.max(0, sim.glitch - dt * 3.5);
 }
 
+/* ---------- DIM switch: darker night sky, softer street lights, no sky events ---------- */
+let dim = 0; // eased 0..1
+function toggleDim() {
+  const on = cockpit.toggleDim();
+  skyEvents.setSuspended(on);
+}
+function updateDim(dt: number) {
+  const target = cockpit.dimmed ? 1 : 0;
+  if (dim === target) return;
+  dim = Math.abs(target - dim) < 0.002 ? target : dim + (target - dim) * Math.min(1, dt * 3);
+  sky.setDim(dim);
+  cockpit.setDim(dim);
+  chunks.setLampLevel(1 - 0.35 * dim);
+}
+
 /* ---------- scene change: washer sweep + fade the world through black ---------- */
 let transition: { t: number; next: ScenePreset; swapped: boolean } | null = null;
 const FADE_OUT = 0.7, FADE_IN = 1.0;
@@ -225,6 +240,7 @@ function loop() {
   rain.update(dt, cockpit.rain, sim.speed, scene.fog as THREE.FogExp2 | null);
   if (scene.fog) (scene.fog as THREE.FogExp2).density = preset.fog.density * (1 + 0.7 * cockpit.rain);
   updateTransition(dt);
+  updateDim(dt);
   post.render(sim.t, sim.glitch, fx);
   requestAnimationFrame(loop);
 }
@@ -260,7 +276,7 @@ if (config.screensaver) {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
     else document.exitFullscreen?.();
   };
-  const radioUi = initRadioInput({ player, cockpit, camera, fxEnabled: () => fx, onWash: () => changeScene() });
+  const radioUi = initRadioInput({ player, cockpit, camera, fxEnabled: () => fx, onWash: () => changeScene(), onDim: toggleDim });
   addEventListener('dblclick', e => { if (!radioUi.isOverRadio(e)) toggleFs(); });
   addEventListener('keydown', e => {
     switch (e.key.toLowerCase()) {
@@ -269,6 +285,7 @@ if (config.screensaver) {
       case 'g': sim.glitch = 1; break;
       case 'n': changeScene(); break;
       case 'r': cockpit.toggleRain(); break;
+      case 'd': cockpit.flashSwitch('dim'); toggleDim(); break;
       case ' ': sim.paused = !sim.paused; e.preventDefault(); break;
       default: {
         const a = radioKey(e.key);

@@ -6,8 +6,10 @@ import { Radio } from './Radio';
 import { DASH_H, DASH_W, drawDigitalDash } from './digitalDash';
 import { Windshield } from './Windshield';
 
-export type PodSwitch = 'wipe' | 'wash' | 'info';
+export type PodSwitch = 'wipe' | 'wash' | 'info' | 'dim';
 const WIPER_REST = -0.04;
+/** how much DIM takes off the dashboard / head unit backlight */
+const DASH_DIM = 0.55;
 
 export interface DriveState {
   t: number;
@@ -33,7 +35,7 @@ export class Cockpit {
   private lights: THREE.PointLight[] = [];
   /** clickable pod switches (userData.pod = 'wipe' | 'info') with their flash level */
   private podSwitches = new Map<PodSwitch, { mesh: THREE.Mesh; flash: number; on: boolean }>();
-  private rightPod!: ReturnType<typeof liveCanvas>;
+  private pods: { side: number; pc: ReturnType<typeof liveCanvas> }[] = [];
   private podGlowKey = '';
   /** windshield wipers: pivots + sweep animation time (−1 = idle) */
   private wipers: THREE.Group[] = [];
@@ -43,6 +45,12 @@ export class Cockpit {
   private finalSweeps = 0;
   private wiperAngle = WIPER_REST;
   readonly windshield = new Windshield();
+  /** DIM switch: night mode (dim sky, softer street lights, dimmed dash, no sky events) */
+  dimmed = false;
+  /** self-lit dash materials with their undimmed colours (collected on first use) */
+  private dimMats: { m: THREE.MeshBasicMaterial; base: THREE.Color }[] | null = null;
+  private dimLevel = 0;
+  private fillIntensity = 1;
   /** rain switched on (WIPE), and the smoothed 0..1 intensity */
   raining = false;
   rain = 0;
@@ -57,6 +65,14 @@ export class Cockpit {
 
   /** One full wiper sweep (up and back), ~1.5 s — used by WASH. */
   wipe() { if (this.wipeT < 0) this.wipeT = 0; }
+
+  /** DIM switch: toggle night mode. */
+  toggleDim() {
+    this.dimmed = !this.dimmed;
+    const sw = this.podSwitches.get('dim');
+    if (sw) sw.on = this.dimmed;
+    return this.dimmed;
+  }
 
   /** WIPE switch: toggle rain (wipers run continuously while it rains). */
   toggleRain() {
@@ -116,13 +132,14 @@ export class Cockpit {
       const pc = liveCanvas(136, 240);
       drawPod(pc.ctx, side, {});
       pc.tex.needsUpdate = true;
-      if (side > 0) this.rightPod = pc;
+      this.pods.push({ side, pc });
       const face = new THREE.Mesh(new THREE.PlaneGeometry(0.068, 0.12), new THREE.MeshBasicMaterial({ map: pc.tex, fog: false }));
       face.position.z = 0.0455;
       pod.add(face);
-      if (side > 0) {
-        // clickable rockers: WIPE (1st) changes the scenery, INFO (3rd) opens the station website
-        for (const [name, y] of [['wipe', 0.042], ['wash', 0.014], ['info', -0.014]] as const) {
+      {
+        // clickable rockers (right pod): WIPE, WASH, INFO, DIM
+        const rockers = side > 0 ? [['wipe', 0.042], ['wash', 0.014], ['info', -0.014], ['dim', -0.042]] as const : [] as const;
+        for (const [name, y] of rockers) {
           const hit = new THREE.Mesh(
             new THREE.PlaneGeometry(0.054, 0.024),
             new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, fog: false }),
@@ -152,6 +169,7 @@ export class Cockpit {
       g.add(pivot);
       this.wipers.push(pivot);
     }
+    this.windshield.mesh.userData.noDim = true; // rain on the glass shows the outside, not the dash
     g.add(this.windshield.mesh);
 
     /* rim highlight along the far edge of the dash (reflected neon) */
@@ -282,7 +300,38 @@ export class Cockpit {
     grad(this.rimWheel.geometry, p.cockpit.rimB, p.cockpit.rimA, 'angle');
     this.lights[0].color.set(p.cockpit.fill);
     this.lights[2].color.set(p.cockpit.fill);
-    for (const l of this.lights.slice(0, 3)) l.intensity = (l === this.lights[1] ? 0.25 : 0.35) * p.cockpit.fillIntensity;
+    this.fillIntensity = p.cockpit.fillIntensity;
+    this.applyLights();
+  }
+
+  /** Interior light levels; the street-lamp spill and the cluster spill follow the DIM switch. */
+  private applyLights() {
+    const d = this.dimLevel, f = this.fillIntensity;
+    this.lights[0].intensity = 0.35 * f;
+    this.lights[1].intensity = 0.25 * f * (1 - 0.35 * d);
+    this.lights[2].intensity = 0.35 * f;
+    this.lights[3].intensity = 0.08 * (1 - DASH_DIM * d);
+  }
+
+  /** DIM switch, eased 0..1: dims the instrument cluster, switch pods and head unit. */
+  setDim(d: number) {
+    if (!this.dimMats) {
+      const mats = new Map<THREE.MeshBasicMaterial, THREE.Color>();
+      this.group.traverse(o => {
+        if (o.userData.noDim) return;
+        const m = (o as THREE.Mesh).material;
+        for (const mm of Array.isArray(m) ? m : m ? [m] : []) {
+          // self-lit surfaces only; radio LEDs are rewritten every frame (Radio.brightness)
+          if (mm instanceof THREE.MeshBasicMaterial && mm.colorWrite && !mm.userData.dynamic && !mats.has(mm)) mats.set(mm, mm.color.clone());
+        }
+      });
+      this.dimMats = [...mats].map(([m, base]) => ({ m, base }));
+    }
+    this.dimLevel = d;
+    const k = 1 - DASH_DIM * d;
+    for (const { m, base } of this.dimMats) m.color.copy(base).multiplyScalar(k);
+    this.radio.brightness = k;
+    this.applyLights();
   }
 
   update(s: DriveState) {
@@ -296,8 +345,10 @@ export class Cockpit {
     const key = Object.values(glow).map(v => v.toFixed(2)).join();
     if (key !== this.podGlowKey) {
       this.podGlowKey = key;
-      drawPod(this.rightPod.ctx, 1, glow);
-      this.rightPod.tex.needsUpdate = true;
+      for (const { side, pc } of this.pods) {
+        drawPod(pc.ctx, side, glow);
+        pc.tex.needsUpdate = true;
+      }
     }
     if (s.t - this.lastDraw >= 1 / 30) {
       this.lastDraw = s.t;
@@ -314,7 +365,7 @@ export class Cockpit {
 function drawPod(x: CanvasRenderingContext2D, side: number, glow: Record<string, number>) {
   const c = x.canvas;
   x.fillStyle = '#0d0e13'; x.fillRect(0, 0, c.width, c.height);
-  const labels = side < 0 ? ['HEAD', 'FOG', 'DIM', 'HAZ'] : ['WIPE', 'WASH', 'INFO', 'A/C'];
+  const labels = side < 0 ? ['HEAD', 'FOG', 'A/C', 'HAZ'] : ['WIPE', 'WASH', 'INFO', 'DIM'];
   labels.forEach((l, i) => {
     const y = 14 + i * 56;
     const gr = x.createLinearGradient(0, y, 0, y + 44);

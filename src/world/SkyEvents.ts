@@ -684,6 +684,13 @@ export class SkyEvents {
   private ray = new THREE.Raycaster();
   private dir = new THREE.Vector3();
   private ctx: SkyCtx = { camAbs: new THREE.Vector3() };
+  private suspended = false;
+
+  /** DIM switch: clear the sky and stop random spawns (console spawns still work). */
+  setSuspended(on: boolean) {
+    this.suspended = on;
+    if (on) this.clear();
+  }
 
   /**
    * @param rate global frequency multiplier (0 disables random spawns)
@@ -780,6 +787,7 @@ export class SkyEvents {
     this.heading = heading;
     if (dt <= 0) return;
     for (const k of skyEventKinds) {
+      if (this.suspended) break;
       this.timers[k] -= dt;
       if (this.timers[k] > 0) continue;
       this.timers[k] = this.interval(k);

@@ -10,12 +10,14 @@ interface Opts {
   fxEnabled: () => boolean;
   /** WASH switch pressed (change scenery) */
   onWash: () => void;
+  /** DIM switch pressed */
+  onDim: () => void;
 }
 
 /**
  * Mouse / drag & drop / media-key handling for the car radio.
  */
-export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash }: Opts) {
+export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash, onDim }: Opts) {
   const radio = cockpit.radio;
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
@@ -51,6 +53,10 @@ export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash }: O
       cockpit.flashSwitch('wipe');
       click();
       cockpit.toggleRain();
+    } else if (o.userData.pod === 'dim') {
+      cockpit.flashSwitch('dim');
+      click();
+      onDim();
     } else if (o.userData.pod === 'wash') {
       cockpit.flashSwitch('wash');
       click();
