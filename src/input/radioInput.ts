@@ -45,6 +45,12 @@ export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash, onD
     const o = pick(e);
     if (!o) return;
     e.preventDefault();
+    if (o.userData.knob) {
+      // volume knob: drag up/right to turn it up, a plain click mutes
+      knobDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, acc: 0, moved: false, base: player.volume };
+      (e.target as Element | null)?.setPointerCapture?.(e.pointerId);
+      return;
+    }
     if (o.userData.pod === 'info') {
       cockpit.flashSwitch('info');
       click();
@@ -65,13 +71,35 @@ export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash, onD
       trigger(o.userData.action as RadioAction);
     }
   });
+  let knobDrag: { id: number; x: number; y: number; acc: number; moved: boolean; base: number } | null = null;
+  const KNOB_PX = 14; // pixels of drag per volume step
   addEventListener('pointermove', e => {
-    document.body.style.cursor = pick(e) ? 'pointer' : '';
+    if (knobDrag && e.pointerId === knobDrag.id) {
+      const d = (e.clientX - knobDrag.x) - (e.clientY - knobDrag.y);
+      if (!knobDrag.moved && Math.abs(d) < 4) return;
+      knobDrag.moved = true;
+      const v = Math.round((knobDrag.base + d / KNOB_PX / 10) * 10) / 10;
+      if (v !== player.volume && v >= 0 && v <= 1) { player.setVolume(v); detent(); }
+      document.body.style.cursor = 'grabbing';
+      return;
+    }
+    const o = pick(e);
+    document.body.style.cursor = o ? (o.userData.knob ? 'grab' : 'pointer') : '';
   });
+  const endDrag = (e: PointerEvent) => {
+    if (!knobDrag || e.pointerId !== knobDrag.id) return;
+    if (!knobDrag.moved && e.type === 'pointerup') trigger('mute');
+    knobDrag = null;
+    document.body.style.cursor = '';
+  };
+  addEventListener('pointerup', endDrag);
+  addEventListener('pointercancel', endDrag);
   addEventListener('wheel', e => {
     const o = pick(e);
     if (!o || o.userData.pod) return;
-    player.setVolume(player.volume + (e.deltaY < 0 ? 0.1 : -0.1));
+    const v = player.volume;
+    player.setVolume(v + (e.deltaY < 0 ? 0.1 : -0.1));
+    if (player.volume !== v) detent();
     e.preventDefault();
   }, { passive: false });
 
@@ -120,9 +148,12 @@ export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash, onD
   };
 }
 
+/* soft detent tick of the volume knob */
+function detent() { click(0.08, 3800); }
+
 /* mechanical button click, synthesised */
 let clickCtx: AudioContext | null = null;
-function click() {
+function click(level = 0.25, freq = 2200) {
   try {
     clickCtx ??= new AudioContext();
     const ctx = clickCtx;
@@ -133,9 +164,9 @@ function click() {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass'; bp.frequency.value = 2200; bp.Q.value = 1.2;
+    bp.type = 'bandpass'; bp.frequency.value = freq; bp.Q.value = 1.2;
     const g = ctx.createGain();
-    g.gain.value = 0.25;
+    g.gain.value = level;
     src.connect(bp).connect(g).connect(ctx.destination);
     src.start();
   } catch { /* audio unavailable */ }

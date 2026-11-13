@@ -17,6 +17,12 @@ const LED_RGB = [110, 255, 180];
 const DOOR = { x: -0.185, y: 0.045, w: 0.24, h: 0.088 };
 const DISP = { x: 0.13, y: 0.045, w: 0.33, h: 0.33 * (ROWS * DOT) / (COLS * DOT) };
 const ROW_Y = -0.054;
+/* volume knob: centre, grip radius, LED ring radius; 10 steps over 270° */
+const KNOB = { x: -0.275, y: -0.056, r: 0.019, ring: 0.0285 };
+const VOL_STEPS = 10;
+const KNOB_SWEEP = Math.PI * 1.5;
+/** knob rotation (rad, CCW +) for a volume 0..1: 7 o'clock at 0, 5 o'clock at 1 */
+const knobAngle = (v: number) => KNOB_SWEEP / 2 - v * KNOB_SWEEP;
 
 interface ButtonDef { action: RadioAction; label: string; x: number; w: number; }
 const BUTTONS: ButtonDef[] = [
@@ -53,6 +59,8 @@ export class Radio {
   brightness = 1;
   private tapeLed!: THREE.MeshBasicMaterial;
   private knob: THREE.Group;
+  private volLeds: THREE.MeshBasicMaterial[] = [];
+  private knobRot = 0;
 
   private lastLed = -1;
   private lastDoor = -1;
@@ -131,18 +139,52 @@ export class Radio {
       }
     }
 
-    /* volume knob */
+    /* volume knob: knurled grip, brushed cap with indicator, LED level ring */
     this.knob = new THREE.Group();
-    const knobMat = new THREE.MeshStandardMaterial({ color: 0x1b1c22, roughness: 0.35, metalness: 0.7, fog: false });
-    const knobMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.021, 0.022, 32).rotateX(Math.PI / 2), knobMat);
+    const knobMat = new THREE.MeshStandardMaterial({ color: 0x16171c, roughness: 0.45, metalness: 0.6, fog: false });
+    const grip = new THREE.CylinderGeometry(KNOB.r, KNOB.r * 1.08, 0.024, 48, 1).rotateX(Math.PI / 2);
+    {
+      // knurling: push every other rim vertex outwards
+      const pos = grip.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), y = pos.getY(i), r = Math.hypot(x, y);
+        if (r < KNOB.r * 0.9) continue;
+        const a = Math.atan2(y, x), seg = Math.round(((a + TAU) % TAU) / TAU * 48);
+        const k = seg % 2 ? 1.06 : 1;
+        pos.setXY(i, x * k, y * k);
+      }
+      grip.computeVertexNormals();
+    }
+    const knobMesh = new THREE.Mesh(grip, knobMat);
     knobMesh.userData.action = 'mute';
+    knobMesh.userData.knob = true;
     this.knob.add(knobMesh);
-    const tick = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.011, 0.002), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 0.8, 0.3), fog: false }));
-    tick.position.set(0, 0.011, 0.012);
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(KNOB.r * 0.72, KNOB.r * 0.76, 0.004, 40).rotateX(Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0x8a8f9c, emissive: 0x1c1e24, roughness: 0.3, metalness: 1, fog: false }),
+    );
+    cap.position.z = 0.0125;
+    cap.userData.action = 'mute';
+    cap.userData.knob = true;
+    this.knob.add(cap);
+    this.interactive.push(knobMesh, cap);
+    const tick = new THREE.Mesh(new THREE.BoxGeometry(0.0026, KNOB.r * 0.62, 0.002), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 0.8, 0.3), fog: false }));
+    tick.position.set(0, KNOB.r * 0.42, 0.0148);
     this.knob.add(tick);
-    this.knob.position.set(-0.275, ROW_Y, FRONT + 0.011);
+    this.knob.position.set(KNOB.x, KNOB.y, FRONT + 0.012);
     g.add(this.knob);
-    this.interactive.push(knobMesh);
+
+    // level ring: one LED per volume step, 7 o'clock -> 5 o'clock
+    const dotGeo = new THREE.CircleGeometry(0.0021, 12);
+    for (let i = 0; i < VOL_STEPS; i++) {
+      const a = knobAngle((i + 1) / VOL_STEPS);
+      const m = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false });
+      m.userData.dynamic = true;
+      const dot = new THREE.Mesh(dotGeo, m);
+      dot.position.set(KNOB.x - Math.sin(a) * KNOB.ring, KNOB.y + Math.cos(a) * KNOB.ring, FRONT + 0.001);
+      g.add(dot);
+      this.volLeds.push(m);
+    }
   }
 
   attach(player: RadioPlayer) { this.player = player; }
@@ -173,7 +215,20 @@ export class Radio {
     }
     const tapeOn = p.mode === 'tape';
     this.tapeLed.color.setRGB(tapeOn ? 3 : 0.05, tapeOn ? 1.2 : 0.03, tapeOn ? 0.2 : 0.02).multiplyScalar(this.brightness);
-    this.knob.rotation.z = -(p.volume - 0.5) * 4.4;
+    // knob eases to its detent; ring lights up to the level (blinks red when muted)
+    const target = knobAngle(p.volume);
+    this.knobRot += (target - this.knobRot) * Math.min(1, dt * 18);
+    this.knob.rotation.z = this.knobRot;
+    const lit = Math.round(p.volume * VOL_STEPS);
+    const muteBlink = p.muted && Math.floor(t * 2) % 2 === 0;
+    for (let i = 0; i < VOL_STEPS; i++) {
+      const on = i < lit;
+      const m = this.volLeds[i];
+      if (p.muted) m.color.setRGB(on ? (muteBlink ? 2.4 : 0.5) : 0.05, on ? 0.12 : 0.02, 0.02);
+      else if (on) m.color.setRGB(0.4 + 0.25 * i / VOL_STEPS, 3, 1.2);
+      else m.color.setRGB(0.03, 0.05, 0.03);
+      m.color.multiplyScalar(this.brightness);
+    }
 
     if (p.status === 'playing' && p.mode === 'tape') this.reel += dt * 2.2;
     if (t - this.lastLed >= 1 / 30) { this.lastLed = t; this.drawLed(t); }
@@ -434,7 +489,10 @@ function drawFaceplate(x: CanvasRenderingContext2D, c: HTMLCanvasElement) {
   for (const b of BUTTONS) {
     roundRect(x, fx(b.x - b.w / 2) - 5, fy(ROW_Y + 0.014) - 5, b.w * FP_SCALE + 10, 0.028 * FP_SCALE + 10, 6); x.fill();
   }
-  x.beginPath(); x.arc(fx(-0.275), fy(ROW_Y), 0.025 * FP_SCALE, 0, TAU); x.fill();
+  x.beginPath(); x.arc(fx(KNOB.x), fy(KNOB.y), (KNOB.r + 0.005) * FP_SCALE, 0, TAU); x.fill();
+  // scale ring around the LEDs
+  x.strokeStyle = 'rgba(200,200,215,0.18)'; x.lineWidth = 2;
+  x.beginPath(); x.arc(fx(KNOB.x), fy(KNOB.y), (KNOB.ring + 0.0042) * FP_SCALE, Math.PI * 0.75, Math.PI * 2.25); x.stroke();
 
   // silkscreen
   x.textBaseline = 'middle';
@@ -450,7 +508,7 @@ function drawFaceplate(x: CanvasRenderingContext2D, c: HTMLCanvasElement) {
   x.fillText('AUTO REVERSE  ·  DOLBY B NR  ·  STEREO CASSETTE RECEIVER', fx(0.295), fy(-0.016));
   x.textAlign = 'center';
   x.font = '600 15px "DejaVu Sans", sans-serif';
-  x.fillText('VOL', fx(-0.275), fy(ROW_Y - 0.032));
+  x.fillText('VOL', fx(KNOB.x), fy(KNOB.y - 0.027));
   x.fillText('EJECT', fx(-0.2), fy(ROW_Y - 0.032));
   x.fillText('SEEK  ·  PLAY/STOP  ·  SEEK', fx(-0.08), fy(ROW_Y - 0.032));
   ['NIGHTRIDE', 'CHILL', 'DATA', 'SPACE', 'DARK'].forEach((nm, i) => x.fillText(nm, fx(0.03 + i * 0.053), fy(ROW_Y - 0.032)));

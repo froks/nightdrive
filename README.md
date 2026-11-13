@@ -27,7 +27,7 @@ A cassette receiver in the centre console with a 5×7 dot-matrix LED display.
 
 - **Radio:** streams [Nightride FM](https://nightride.fm) channels (synthwave, chillsynth, datawave, spacesynth, darksynth, horrorsynth) with live now-playing titles. Presets 1–5; ◄◄ / ►► seek through all channels. Nightride FM is listener-supported; consider supporting them.
 - **Tape:** drop audio files onto the page (or press ▲ TAPE to pick files) to insert a "tape"; ◄◄ / ►► skip tracks, ▲ TAPE ejects back to radio.
-- Click the buttons in the dashboard, scroll over the radio for volume, click the knob to mute. Media keys / desktop media controls work too (Media Session).
+- Click the buttons in the dashboard. **Volume:** drag the VOL knob (up/right = louder) or scroll over the radio; the LED ring around the knob shows the level, clicking the knob mutes (ring blinks red). Media keys / desktop media controls work too (Media Session).
 
 | Key | Radio action |
 |---|---|
@@ -63,7 +63,7 @@ src/
   cockpit/ledFont.ts   5×7 dot-matrix font
   audio/RadioPlayer.ts stream/tape playback, Nightride metadata (SSE), analyser, volume
   audio/stations.ts    station list (presets = first five)
-  input/radioInput.ts  button picking, wheel volume, drag & drop, media keys
+  input/radioInput.ts  button picking, volume knob drag / wheel, drag & drop, media keys
   fx/Post.ts           bloom + VHS shader (chromatic aberration, scanlines, grain, glitch)
 prototype/index.html   original single-file 2D canvas prototype
 ```
