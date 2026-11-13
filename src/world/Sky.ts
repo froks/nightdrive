@@ -57,19 +57,35 @@ export class Sky {
         }
         vec3 starLayer(vec3 d, float scale, float density) {
           vec3 p = d * scale;
-          vec3 id = floor(p);
-          vec3 h = hash33(id);
-          if (h.x > density) return vec3(0.0);
-          vec3 c = 0.25 + 0.5 * hash33(id + 17.0);
-          float dist = length(fract(p) - c);
-          float px = length(fwidth(p)) * 0.42;
-          float big = pow(h.y, 8.0);
-          float size = px * (0.8 + 2.0 * big);
-          float tw = 0.7 + 0.3 * sin(uTime * (0.6 + h.z * 3.0) + h.y * 40.0);
-          float core = 1.0 - smoothstep(0.0, size, dist);
-          float halo = (1.0 - smoothstep(0.0, size * 4.0, dist)) * big * 0.25;
-          vec3 tint = mix(vec3(1.0, 0.82, 0.68), vec3(0.72, 0.82, 1.0), h.z);
-          return tint * (core + halo) * (0.25 + 0.75 * h.y) * tw;
+          // one screen pixel in cell units (outside the loop: derivatives need uniform flow)
+          float pxu = max(length(fwidth(p)) * 0.5, 1e-6);
+          vec3 cell = floor(p);
+          vec3 acc = vec3(0.0);
+          // Stars are soft gaussians at least ~1 px wide, so they glide across the pixel
+          // grid instead of popping on/off as the field rotates while driving. On the fine
+          // layers a cell is only a few pixels, so a star's footprint spills into the
+          // neighbouring cells: evaluate all 27 around the pixel, otherwise the footprint
+          // is clipped at cell borders and the star flickers as it moves.
+          for (int z = -1; z <= 1; z++)
+          for (int y = -1; y <= 1; y++)
+          for (int x = -1; x <= 1; x++) {
+            vec3 id = cell + vec3(float(x), float(y), float(z));
+            vec3 h = hash33(id);
+            if (h.x > density) continue;
+            vec3 c = id + 0.25 + 0.5 * hash33(id + 17.0);
+            float dpx = length(p - c) / pxu;
+            float big = pow(h.y, 8.0);
+            float r = 0.8 + 0.6 * big;
+            float q = dpx * dpx / (r * r);
+            if (q > 40.0) continue;
+            // gentle, slow twinkle (off in DIM mode)
+            float tw = 1.0 - (0.12 * (1.0 - uDim)) * (0.5 + 0.5 * sin(uTime * (0.3 + h.z * 1.1) + h.y * 40.0));
+            float core = exp(-q) * 0.6;
+            float halo = exp(-q * 0.35) * big * 0.08;
+            vec3 tint = mix(vec3(1.0, 0.82, 0.68), vec3(0.72, 0.82, 1.0), h.z);
+            acc += tint * (core + halo) * (0.25 + 0.75 * h.y) * tw;
+          }
+          return acc;
         }
         void main() {
           vec3 d = normalize(vDir);
@@ -81,7 +97,7 @@ export class Sky {
           col += uGlow * (g * 0.9 + band * 0.25) * uGlowStrength * (1.0 - 0.7 * uDim);
           col *= 1.0 - 0.55 * uDim;
           vec3 sd = uStarRot * d;
-          vec3 st = starLayer(sd, 150.0, 0.10) + starLayer(sd, 320.0, 0.07) * 0.8 + starLayer(sd, 640.0, 0.06) * 0.55;
+          vec3 st = starLayer(sd, 150.0, 0.10) + starLayer(sd, 320.0, 0.03) * 0.8 + starLayer(sd, 640.0, 0.012) * 0.6;
           col += st * smoothstep(-0.01, 0.12, e) * uStarBright * (1.0 - 0.75 * uDim);
           if (e < 0.0) col = mix(uHorizon, uHorizon * 0.4, smoothstep(0.0, 0.2, -e));
           gl_FragColor = vec4(col, 1.0);
