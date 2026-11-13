@@ -43,7 +43,7 @@ Dev: `npm run dev` then open `/#test-tape` to insert a generated test tape with 
 
 ## URL parameters
 
-`?scene=dusk` · `?q=0.75` (render scale) · `?fx=0` · `?glitch=0` · `?seek=120` · `?rain` · `?autoplay` · `?screensaver` (closes the window on input)
+`?scene=dusk` · `?q=0.75` (render scale) · `?fx=0` · `?glitch=0` · `?seek=120` · `?rain` · `?autoplay` · `?screensaver` (closes the window on input) · `?eggs=0` (no sky easter eggs; `?eggs=20` makes them 20× more frequent)
 
 ## Layout
 

@@ -8,6 +8,7 @@ import { ChunkManager } from './world/Chunks';
 import { Sky } from './world/Sky';
 import { Mountains } from './world/Mountains';
 import { Traffic } from './world/Traffic';
+import { SkyEvents } from './world/SkyEvents';
 import { Cockpit } from './cockpit/Cockpit';
 import { Rain } from './world/Rain';
 import { Post } from './fx/Post';
@@ -32,6 +33,22 @@ const sky = new Sky(preset);
 const mountains = new Mountains(preset);
 const chunks = new ChunkManager(track, preset);
 const traffic = new Traffic(track, preset, config.seek * 33);
+const groundRay = new THREE.Raycaster(), DOWN = new THREE.Vector3(0, -1, 0);
+const skyEvents = new SkyEvents(preset, config.eggs, {
+  terrainHit: ray => chunks.terrainHit(ray),
+  groundAhead: (ahead, lateral) => {
+    // drop a ray onto the terrain at that spot
+    const p = track.point(sim.pos + ahead, lateral, 0, new THREE.Vector3());
+    groundRay.set(new THREE.Vector3(p.x - origin.x, p.y - origin.y + 600, p.z - origin.z), DOWN);
+    groundRay.far = 1500;
+    const d = chunks.terrainHit(groundRay);
+    return Number.isFinite(d) ? p.setY(p.y + 600 - d) : null;
+  },
+  roadPoint: (s, lateral, height, out) => track.point(s, lateral, height, out),
+  carPos: () => sim.pos,
+  speed: () => sim.speed,
+  glitch: () => { if (config.glitch) sim.glitch = Math.max(sim.glitch, 0.8); },
+});
 const cockpit = new Cockpit(preset);
 camera.add(cockpit.group);
 const rain = new Rain();
@@ -46,7 +63,7 @@ const curtain = new THREE.Mesh(
 curtain.renderOrder = 15; // after world glows/rain, before windshield drops
 curtain.visible = false;
 camera.add(curtain);
-scene.add(sky.group, mountains.group, chunks.root, traffic.group);
+scene.add(sky.group, skyEvents.group, mountains.group, chunks.root, traffic.group);
 
 const hemi = new THREE.HemisphereLight();
 const moon = new THREE.DirectionalLight();
@@ -67,6 +84,7 @@ function applyPreset(p: ScenePreset) {
   moon.color.set(p.light.moon);
   moon.intensity = p.light.moonIntensity;
   sky.setPreset(p);
+  skyEvents.setPreset(p);
   mountains.setPreset(p);
   chunks.setPreset(p);
   traffic.setPreset(p, sim.pos);
@@ -136,6 +154,7 @@ function update(dt: number) {
   track.point(sim.pos + 900, 0, 0, v2).sub(origin).sub(camera.position);
   sky.update(camera.position, sim.headingAvg, v2, t, dt);
   mountains.update(camera.position, v0.y - origin.y - 1.2);
+  skyEvents.update(dt, camera.position, sim.heading, origin);
 
   cockpit.update({
     t,
@@ -299,4 +318,4 @@ for (let i = 0; i < 12; i++) chunks.update(sim.pos, origin);
 requestAnimationFrame(loop);
 
 // expose for debugging in the console
-Object.assign(window, { nightdrive: { sim, scene, camera, post, renderer, player, applyPreset, presets } });
+Object.assign(window, { nightdrive: { sim, scene, camera, post, renderer, player, applyPreset, presets, skyEvents } });

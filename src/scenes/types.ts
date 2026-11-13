@@ -21,6 +21,8 @@ export interface ScenePreset {
     /** slow rotation of the star sphere (rad/s) */
     starDrift: number;
   };
+  /** frequency multipliers for rare sky events (see world/SkyEvents.ts); 0 disables */
+  skyEvents: { meteors: number; satellites: number; planes: number; ufos: number; timecars: number };
   fog: { color: string; density: number };
   terrain: { near: string; far: string; hilliness: number };
   mountains: { far: string; farTop: string; near: string };

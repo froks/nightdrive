@@ -76,6 +76,8 @@ export function setGlowViewport(bufferHeight: number, fovDeg: number) {
   glowScale = bufferHeight / (2 * Math.tan((fovDeg * Math.PI) / 360));
   for (const m of glowPointMats) m.uniforms.uScale.value = glowScale;
 }
+/** Pixels per metre at distance 1 (for size-attenuated point sprites). */
+export const getGlowScale = () => glowScale;
 export function glowPointsMaterial(color: THREE.ColorRepresentation, intensity: number, sizeMeters: number, minPx = 3.5) {
   const m = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([

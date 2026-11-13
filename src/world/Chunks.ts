@@ -102,6 +102,7 @@ interface Chunk {
   index: number;
   anchor: THREE.Vector3;
   group: THREE.Group;
+  terrain: THREE.Mesh;
 }
 
 export class ChunkManager {
@@ -148,6 +149,17 @@ export class ChunkManager {
       if (!this.chunks.has(i)) { this.chunks.set(i, this.build(i)); built++; }
     }
     for (const c of this.chunks.values()) c.group.position.subVectors(c.anchor, origin);
+  }
+
+  /** Distance to the first terrain hit along a render-space ray (Infinity if none). */
+  terrainHit(raycaster: THREE.Raycaster): number {
+    let best = Infinity;
+    for (const c of this.chunks.values()) {
+      c.terrain.updateWorldMatrix(true, false); // chunks built this frame haven't been rendered yet
+      const hit = raycaster.intersectObject(c.terrain, false)[0];
+      if (hit && hit.distance < best) best = hit.distance;
+    }
+    return best;
   }
 
   private dispose(c: Chunk) {
@@ -289,10 +301,11 @@ export class ChunkManager {
     }
 
     /* ---------- terrain ---------- */
-    group.add(this.buildTerrain(s0, s1, anchor));
+    const terrain = this.buildTerrain(s0, s1, anchor);
+    group.add(terrain);
 
     this.root.add(group);
-    return { index, anchor, group };
+    return { index, anchor, group, terrain };
   }
 
   private buildTerrain(s0: number, s1: number, anchor: THREE.Vector3) {

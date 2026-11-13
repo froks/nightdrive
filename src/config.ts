@@ -8,6 +8,7 @@
  *   ?rain          start with rain + wipers
  *   ?autoplay      start the radio immediately (needs a browser autoplay permission)
  *   ?screensaver   exit (window.close) on user input, hide UI
+ *   ?eggs=5        sky easter-egg frequency multiplier (0 = off)
  */
 const P = new URLSearchParams(location.search);
 const num = (v: string | null, d: number) => (v !== null && !Number.isNaN(parseFloat(v)) ? parseFloat(v) : d);
@@ -22,4 +23,6 @@ export const config = {
   autoplay: P.has('autoplay'),
   rain: P.has('rain'),
   screensaver: P.has('screensaver'),
+  /** frequency multiplier for shooting stars, UFOs & co. */
+  eggs: Math.max(0, num(P.get('eggs'), 1)),
 };
