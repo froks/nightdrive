@@ -297,6 +297,9 @@ if (config.autoplay) player.play();
 function startDriving() {
   if (sim.started) return;
   sim.started = true;
+  // the starting key press must not leave the car paused (Space is both "any key" and pause,
+  // and the keydown handler toggling pause runs before this one)
+  sim.paused = false;
   cockpit.radio.setPrompt(null);
   setTimeout(() => hint.classList.add('hide'), 5000);
   // let a radio button that was clicked first take precedence, then start the music
