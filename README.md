@@ -66,3 +66,7 @@ src/
   fx/Post.ts           bloom + VHS shader (chromatic aberration, scanlines, grain, glitch)
 prototype/index.html   original single-file 2D canvas prototype
 ```
+
+## License
+
+[CC0 1.0 Universal](LICENSE) — public domain dedication. Radio streams are provided by [Nightride FM](https://nightride.fm) and are not covered by this license.
