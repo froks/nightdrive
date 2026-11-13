@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightdrive</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  body.idle { cursor: none; }
+  #hint {
+    position: fixed; right: 16px; top: 14px; z-index: 2;
+    font: 12px/1.4 ui-monospace, "DejaVu Sans Mono", monospace; letter-spacing: .08em;
+    color: rgba(255, 190, 230, .75); text-shadow: 0 0 6px rgba(255, 60, 170, .8);
+    transition: opacity 1.2s; pointer-events: none; user-select: none;
+  }
+  #hint.hide { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="out"></canvas>
+<div id="hint">F fullscreen · T title · M mute fx · SPACE pause</div>
+<script>
+'use strict';
+/* ------------------------------------------------------------------ *
+ *  NIGHTDRIVE — procedural neon night drive.                          *
+ *  URL params:  ?q=0.75        render scale (performance)             *
+ *               ?title=0       hide title                             *
+ *               ?fx=0          disable VHS post-processing            *
+ *               ?screensaver   exit (window.close) on user input      *
+ *               ?text=FOO      custom title text                      *
+ * ------------------------------------------------------------------ */
+const P = new URLSearchParams(location.search);
+const QUALITY = Math.min(2, Math.max(0.25, parseFloat(P.get('q')) || 1));
+const SCREENSAVER = P.has('screensaver');
+let showTitle = P.get('title') !== '0';
+let useFx = P.get('fx') !== '0';
+const TITLE = (P.get('text') || 'NIGHTDRIVE').toUpperCase();
+
+const TAU = Math.PI * 2;
+const rand = Math.random;
+const gauss = () => (rand() + rand() + rand() + rand() - 2) / 1.15;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const mix = (a, b, t) => a + (b - a) * t;
+function mk(w, h) { const c = document.createElement('canvas'); c.width = Math.max(1, w | 0); c.height = Math.max(1, h | 0); return c; }
+
+/* ---------- canvases ---------- */
+const out = document.getElementById('out');
+const scene = mk(1, 1), g = scene.getContext('2d');
+const neon = mk(1, 1), n = neon.getContext('2d');
+const blur = [mk(1, 1), mk(1, 1), mk(1, 1), mk(1, 1)];
+const bctx = blur.map(c => c.getContext('2d'));
+
+let W, H, f, cx, horizon0, skyMargin;
+let starsCanvas, galaxyCanvas, twinkles = [];
+
+/* ---------- world parameters ---------- */
+const zNear = 1, DZ = 2, NS = 330, zFar = zNear + DZ * (NS - 1);
+const camH = 1.5;
+const EDGE = 7, SHOULDER = 9.4, ROADW = 10.2;
+const LAMP_SPACING = 46;
+const RX = new Float32Array(NS);
+
+// Road curvature as a function of travelled distance (zero-mean, with straights).
+function curv(s) {
+  const gate = Math.sin(s / 1310 + 0.7);
+  return 0.00052 * Math.sin(s / 430) * gate * gate * 1.4 + 0.00011 * Math.sin(s / 233 + 2.1);
+}
+
+/* ---------- state ---------- */
+let pos = 0, speed = 33, heading = 0, headingAvg = 0, t = 0;
+let camX = 1.75, horizon = 0, steer = 0;
+let paused = false, glitch = 0, nextGlitch = 6 + rand() * 10;
+let cars = [], nextCar = 3;
+const lead = { d: 160, L: 1.75, v: 33 };
+let shooting = null, nextShoot = 8 + rand() * 12;
+
+/* ================================================================== *
+ *  Asset generation (on resize)                                       *
+ * ================================================================== */
+function makeStars() {
+  const w = Math.round(W + skyMargin * 2), h = Math.round(horizon0 + 4);
+  const c = mk(w, h), x = c.getContext('2d');
+  const count = Math.round(w * h / 520);
+  for (let i = 0; i < count; i++) {
+    const sx = rand() * w, sy = Math.pow(rand(), 1.15) * h;
+    const r = Math.pow(rand(), 7) * 1.7 + 0.35;
+    const tint = rand();
+    const col = tint < 0.15 ? [255, 214, 180] : tint < 0.35 ? [190, 210, 255] : [240, 240, 255];
+    const fade = clamp(1 - sy / h, 0.15, 1);
+    const a = (0.25 + rand() * 0.75) * fade;
+    x.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${a})`;
+    if (r < 0.9) x.fillRect(sx, sy, r * 1.4, r * 1.4);
+    else { x.beginPath(); x.arc(sx, sy, r, 0, TAU); x.fill(); }
+  }
+  // a few big glowing stars with tiny cross flares
+  for (let i = 0; i < Math.round(w / 90); i++) {
+    const sx = rand() * w, sy = rand() * h * 0.85, R = (2 + rand() * 5) * H / 1000;
+    const gr = x.createRadialGradient(sx, sy, 0, sx, sy, R * 3);
+    gr.addColorStop(0, 'rgba(255,255,255,.95)');
+    gr.addColorStop(0.25, 'rgba(200,215,255,.35)');
+    gr.addColorStop(1, 'rgba(160,180,255,0)');
+    x.fillStyle = gr; x.beginPath(); x.arc(sx, sy, R * 3, 0, TAU); x.fill();
+    x.fillStyle = 'rgba(220,230,255,.35)';
+    x.fillRect(sx - R * 4, sy - 0.5, R * 8, 1);
+    x.fillRect(sx - 0.5, sy - R * 4, 1, R * 8);
+  }
+  starsCanvas = c;
+
+  twinkles = [];
+  for (let i = 0; i < 160; i++) {
+    twinkles.push({ x: rand() * w, y: Math.pow(rand(), 1.3) * h * 0.95, r: (0.6 + rand() * 1.2) * Math.max(1, H / 900),
+                    ph: rand() * TAU, sp: 0.6 + rand() * 2.5 });
+  }
+}
+
+function makeGalaxy() {
+  const S = Math.round(H * 1.05);
+  const c = mk(S, S), x = c.getContext('2d');
+  const R = S * 0.46, INC = 0.4, k = S / 1000;
+  x.translate(S / 2, S / 2);
+  x.rotate(-0.92);
+  x.globalCompositeOperation = 'lighter';
+
+  // diffuse halo
+  x.save(); x.scale(1, INC);
+  let gr = x.createRadialGradient(0, 0, 0, 0, 0, R);
+  gr.addColorStop(0, 'rgba(255,245,235,0.9)');
+  gr.addColorStop(0.07, 'rgba(255,215,200,0.55)');
+  gr.addColorStop(0.25, 'rgba(225,150,175,0.20)');
+  gr.addColorStop(0.55, 'rgba(120,110,200,0.08)');
+  gr.addColorStop(1, 'rgba(60,70,160,0)');
+  x.fillStyle = gr; x.beginPath(); x.arc(0, 0, R, 0, TAU); x.fill();
+  x.restore();
+
+  const N = Math.round(55000 * k * k);
+  const armPts = [];
+  for (let i = 0; i < N; i++) {
+    const inArm = rand() < 0.72;
+    const arm = rand() < 0.5 ? 0 : Math.PI;
+    const rr = inArm ? Math.pow(rand(), 0.8) : Math.pow(rand(), 0.55);
+    const th = inArm ? arm + rr * 5.6 + gauss() * (0.22 + 0.3 * (1 - rr)) : rand() * TAU;
+    const rad = rr * R * (1 + gauss() * 0.06);
+    const px = Math.cos(th) * rad, py = Math.sin(th) * rad * INC;
+    let cr, cg, cb;
+    const pk = rand();
+    if (pk < 0.12) { cr = 255; cg = 140; cb = 190; }
+    else { cr = mix(255, 150, rr); cg = mix(222, 165, rr); cb = mix(190, 255, rr); }
+    const a = (0.05 + rand() * 0.13) * (inArm ? 1 : 0.6);
+    x.fillStyle = `rgba(${cr | 0},${cg | 0},${cb | 0},${a})`;
+    const sz = (0.6 + rand() * 1.7) * k * 1.3;
+    x.fillRect(px, py, sz, sz);
+    if (inArm && rr > 0.12 && rr < 0.85 && i % 7 === 0) armPts.push([arm, rr]);
+  }
+
+  // dust lanes — erase light along the inner edge of the arms
+  x.globalCompositeOperation = 'destination-out';
+  for (const [arm, rr] of armPts) {
+    const th = arm + rr * 5.6 + 0.42 + gauss() * 0.08;
+    const rad = rr * R;
+    const px = Math.cos(th) * rad, py = Math.sin(th) * rad * INC;
+    x.fillStyle = `rgba(0,0,0,${0.10 + rand() * 0.12})`;
+    const sz = (2 + rand() * 5) * k;
+    x.beginPath(); x.ellipse(px, py, sz * 1.6, sz * 0.7, 0, 0, TAU); x.fill();
+  }
+  x.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < armPts.length / 2; i++) {
+    const [arm, rr] = armPts[(rand() * armPts.length) | 0];
+    const th = arm + rr * 5.6 + 0.38 + gauss() * 0.07;
+    const px = Math.cos(th) * rr * R, py = Math.sin(th) * rr * R * INC;
+    x.fillStyle = `rgba(70,35,30,${0.05 + rand() * 0.06})`;
+    x.fillRect(px, py, 2.5 * k, 1.5 * k);
+  }
+
+  // bright core + star-forming knots
+  x.globalCompositeOperation = 'lighter';
+  x.save(); x.scale(1, INC * 1.15);
+  gr = x.createRadialGradient(0, 0, 0, 0, 0, R * 0.16);
+  gr.addColorStop(0, 'rgba(255,255,250,1)');
+  gr.addColorStop(0.35, 'rgba(255,235,220,0.55)');
+  gr.addColorStop(1, 'rgba(255,190,190,0)');
+  x.fillStyle = gr; x.beginPath(); x.arc(0, 0, R * 0.16, 0, TAU); x.fill();
+  x.restore();
+  for (let i = 0; i < 500 * k; i++) {
+    const arm = rand() < 0.5 ? 0 : Math.PI, rr = 0.2 + rand() * 0.7;
+    const th = arm + rr * 5.6 - 0.1 + gauss() * 0.1;
+    const px = Math.cos(th) * rr * R, py = Math.sin(th) * rr * R * INC;
+    x.fillStyle = rand() < 0.6 ? 'rgba(255,150,200,0.55)' : 'rgba(170,200,255,0.6)';
+    x.beginPath(); x.arc(px, py, (0.6 + rand()) * k, 0, TAU); x.fill();
+  }
+  galaxyCanvas = c;
+}
+
+/* ================================================================== *
+ *  WebGL post-processing (chromatic aberration, scanlines, grain)     *
+ * ================================================================== */
+let gl = null, glProg, glTex, uRes, uTime, uGlitch, uFx;
+function initGL() {
+  try { gl = out.getContext('webgl', { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: false }); }
+  catch (e) { gl = null; }
+  if (!gl) return false;
+  const vs = `attribute vec2 p; varying vec2 uv; void main(){ uv = p*.5+.5; gl_Position = vec4(p,0.,1.); }`;
+  const fs = `precision mediump float;
+  varying vec2 uv; uniform sampler2D tex; uniform vec2 res; uniform float time; uniform float glitch; uniform float fx;
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+  void main(){
+    vec2 p = uv*2.-1.;
+    float r2 = dot(p,p);
+    vec2 u = mix(uv, (p*(1. + .025*r2*fx))*.5+.5, 1.);
+    // VHS tracking wobble + glitch band
+    float line = floor(u.y*res.y/3.);
+    float band = smoothstep(.06, 0., abs(u.y - fract(time*.07 + .3)));
+    u.x += fx*((hash(vec2(line, floor(time*24.))) - .5) * (.0009 + .012*glitch) * (.25 + band + glitch));
+    u.x += fx*glitch * .02 * sin(u.y*40. + time*30.) * step(.5, hash(vec2(floor(u.y*12.), floor(time*20.))));
+    vec2 ca = (u-.5) * (.0035 + .006*glitch) * (1. + 1.5*r2) * fx;
+    vec3 col;
+    col.r = texture2D(tex, u + ca).r;
+    col.g = texture2D(tex, u).g;
+    col.b = texture2D(tex, u - ca).b;
+    // scanlines
+    col *= 1. - fx*.10*(.5+.5*sin(gl_FragCoord.y*3.14159*.66));
+    // grain
+    col += fx*(hash(gl_FragCoord.xy + fract(time)*97.) - .5) * .045;
+    // vignette
+    col *= mix(1., smoothstep(1.55, .35, length(p*vec2(.9,1.05))), .85);
+    // slight lift of blacks (CRT haze)
+    col = col*.97 + vec3(.008,.006,.018)*fx;
+    if (u.x<0. || u.x>1. || u.y<0. || u.y>1.) col = vec3(0.);
+    gl_FragColor = vec4(col, 1.);
+  }`;
+  function sh(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  try {
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, sh(gl.VERTEX_SHADER, vs));
+    gl.attachShader(glProg, sh(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(glProg));
+  } catch (e) { console.warn('WebGL post fx disabled:', e); gl = null; return false; }
+  gl.useProgram(glProg);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(glProg, 'p');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  glTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, glTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  uRes = gl.getUniformLocation(glProg, 'res');
+  uTime = gl.getUniformLocation(glProg, 'time');
+  uGlitch = gl.getUniformLocation(glProg, 'glitch');
+  uFx = gl.getUniformLocation(glProg, 'fx');
+  return true;
+}
+
+let out2d = null;
+if (!initGL()) out2d = out.getContext('2d');
+
+/* ================================================================== */
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let w = innerWidth * dpr * QUALITY, h = innerHeight * dpr * QUALITY;
+  const maxW = 2560 * QUALITY;
+  if (w > maxW) { h *= maxW / w; w = maxW; }
+  W = Math.round(w); H = Math.round(h);
+  for (const c of [scene, neon, out]) { c.width = W; c.height = H; }
+  blur.forEach((c, i) => { const d = 2 << i; c.width = Math.ceil(W / d); c.height = Math.ceil(H / d); });
+  f = H * 0.9;
+  cx = W / 2;
+  horizon0 = H * 0.555;
+  skyMargin = W * 0.35;
+  makeStars();
+  makeGalaxy();
+  if (gl) gl.viewport(0, 0, W, H);
+}
+
+/* ================================================================== *
+ *  Projection helpers                                                 *
+ * ================================================================== */
+function rxAt(z) {
+  const fi = clamp((z - zNear) / DZ, 0, NS - 1.001);
+  const i = fi | 0, a = fi - i;
+  return RX[i] * (1 - a) + RX[i + 1] * a;
+}
+// world (lateral L from road centre, height y, depth z) -> screen
+function px(z, L) { return cx + (rxAt(z) + L - camX) * f / z; }
+function py(z, y) { return horizon + (camH - y) * f / z; }
+
+/* ================================================================== *
+ *  Drawing                                                            *
+ * ================================================================== */
+function drawSky(skyShift) {
+  const gr = g.createLinearGradient(0, 0, 0, horizon);
+  gr.addColorStop(0, '#04050d');
+  gr.addColorStop(0.45, '#0a1029');
+  gr.addColorStop(0.8, '#161a3d');
+  gr.addColorStop(1, '#2e2152');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, W, horizon + 2);
+
+  const sx = -skyMargin + clamp(skyShift, -skyMargin, skyMargin);
+  g.drawImage(starsCanvas, sx, horizon - horizon0);
+
+  // galaxy
+  const gS = galaxyCanvas.width;
+  g.globalCompositeOperation = 'lighter';
+  g.globalAlpha = 0.95;
+  g.drawImage(galaxyCanvas, W * 0.5 + skyShift * 0.98 - gS / 2, H * 0.29 - gS / 2 + (horizon - horizon0));
+  g.globalAlpha = 1;
+
+  // twinkles
+  for (const s of twinkles) {
+    const a = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(t * s.sp + s.ph), 3);
+    g.fillStyle = `rgba(235,240,255,${a})`;
+    const x = s.x + sx, y = s.y + horizon - horizon0;
+    g.fillRect(x - s.r / 2, y - s.r / 2, s.r, s.r);
+  }
+
+  // shooting star
+  if (shooting) {
+    const k = shooting.age / shooting.life;
+    const hx = shooting.x + shooting.vx * shooting.age, hy = shooting.y + shooting.vy * shooting.age;
+    const tl = 0.12;
+    const gr2 = g.createLinearGradient(hx, hy, hx - shooting.vx * tl, hy - shooting.vy * tl);
+    const a = Math.sin(k * Math.PI);
+    gr2.addColorStop(0, `rgba(255,255,255,${a})`);
+    gr2.addColorStop(1, 'rgba(180,200,255,0)');
+    g.strokeStyle = gr2; g.lineWidth = Math.max(1, H / 700);
+    g.beginPath(); g.moveTo(hx, hy); g.lineTo(hx - shooting.vx * tl, hy - shooting.vy * tl); g.stroke();
+  }
+  g.globalCompositeOperation = 'source-over';
+}
+
+function mountainPath(off, fn, color, top) {
+  g.beginPath();
+  g.moveTo(0, horizon + 3);
+  const step = Math.max(2, W / 500);
+  for (let x = 0; x <= W + step; x += step) {
+    const u = (x - off) / H;
+    g.lineTo(x, horizon - fn(u) * H);
+  }
+  g.lineTo(W, horizon + 3);
+  g.closePath();
+  if (top) {
+    const gr = g.createLinearGradient(0, horizon - H * 0.12, 0, horizon);
+    gr.addColorStop(0, top); gr.addColorStop(1, color);
+    g.fillStyle = gr;
+  } else g.fillStyle = color;
+  g.fill();
+}
+
+function drawMountains(off) {
+  // horizon haze behind mountains
+  let gr = g.createLinearGradient(0, horizon - H * 0.16, 0, horizon);
+  gr.addColorStop(0, 'rgba(80,60,160,0)');
+  gr.addColorStop(1, 'rgba(110,70,170,0.35)');
+  g.fillStyle = gr; g.fillRect(0, horizon - H * 0.16, W, H * 0.16);
+
+  mountainPath(off * 0.97, u => 0.045 + 0.03 * Math.sin(u * 2.3 + 1) + 0.02 * Math.sin(u * 5.1 + 2) +
+    0.01 * Math.sin(u * 13.7 + 0.5) + 0.005 * Math.sin(u * 37 + 1.3) + 0.0025 * Math.sin(u * 91),
+    '#121730', '#232b4d');
+  mountainPath(off, u => 0.016 + 0.012 * Math.sin(u * 4.1 + 3) + 0.008 * Math.sin(u * 9.7 + 1) +
+    0.004 * Math.abs(Math.sin(u * 61)) + 0.004 * Math.abs(Math.sin(u * 157 + 1)) + 0.002 * Math.abs(Math.sin(u * 411)),
+    '#070a15', '#0d1222');
+
+  // glow of the road's vanishing point
+  const vx = px(zFar * 0.9, 0), vy = horizon;
+  gr = g.createRadialGradient(vx, vy, 0, vx, vy, H * 0.25);
+  gr.addColorStop(0, 'rgba(255,120,190,0.22)');
+  gr.addColorStop(0.4, 'rgba(140,90,220,0.08)');
+  gr.addColorStop(1, 'rgba(80,60,180,0)');
+  g.fillStyle = gr; g.fillRect(vx - H * 0.25, vy - H * 0.25, H * 0.5, H * 0.5);
+}
+
+function lampLight(d) {
+  const ph = ((d % LAMP_SPACING) + LAMP_SPACING) % LAMP_SPACING;
+  const dist = Math.min(ph, LAMP_SPACING - ph);
+  return Math.exp(-dist * dist / 160);
+}
+
+function strip(ctx, L, wM, minPx, zA, zB) {
+  // filled ribbon along the road at lateral offset L with world width wM
+  const i0 = Math.max(0, Math.floor((zA - zNear) / DZ)), i1 = Math.min(NS - 1, Math.ceil((zB - zNear) / DZ));
+  ctx.beginPath();
+  for (let i = i0; i <= i1; i++) {
+    const z = zNear + i * DZ, sc = f / z;
+    const hw = Math.max(wM * sc, minPx) / 2;
+    ctx.lineTo(cx + (RX[i] + L - camX) * sc - hw, horizon + camH * sc);
+  }
+  for (let i = i1; i >= i0; i--) {
+    const z = zNear + i * DZ, sc = f / z;
+    const hw = Math.max(wM * sc, minPx) / 2;
+    ctx.lineTo(cx + (RX[i] + L - camX) * sc + hw, horizon + camH * sc);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function quadOnRoad(ctx, L0, L1, z0, z1, wM, minPx) {
+  // a short line segment painted on the road surface from (L0,z0) to (L1,z1)
+  const x0 = px(z0, L0), y0 = py(z0, 0), x1 = px(z1, L1), y1 = py(z1, 0);
+  const w0 = Math.max(wM * f / z0, minPx) / 2, w1 = Math.max(wM * f / z1, minPx) / 2;
+  ctx.beginPath();
+  ctx.moveTo(x0 - w0, y0); ctx.lineTo(x1 - w1, y1); ctx.lineTo(x1 + w1, y1); ctx.lineTo(x0 + w0, y0);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawRoad() {
+  // ground
+  let gr = g.createLinearGradient(0, horizon, 0, H);
+  gr.addColorStop(0, '#2a1f4a');
+  gr.addColorStop(0.08, '#100f22');
+  gr.addColorStop(1, '#040408');
+  g.fillStyle = gr; g.fillRect(0, horizon, W, H - horizon);
+
+  // asphalt, far to near
+  for (let i = NS - 1; i > 0; i--) {
+    const z = zNear + i * DZ, zb = z - DZ;
+    const sa = f / z, sb = f / zb;
+    const ya = horizon + camH * sa, yb = horizon + camH * sb;
+    if (ya > H) continue;
+    const light = lampLight(pos + z);
+    const fog = Math.pow(Math.min(1, z / zFar), 1.4);
+    const r = mix(11 + light * 20, 44, fog), gg = mix(13 + light * 28, 32, fog), b = mix(24 + light * 46, 78, fog);
+    g.fillStyle = `rgb(${r | 0},${gg | 0},${b | 0})`;
+    const xa = cx + (RX[i] - camX) * sa, xb = cx + (RX[i - 1] - camX) * sb;
+    g.beginPath();
+    g.moveTo(xa - ROADW * sa, ya - 0.6); g.lineTo(xa + ROADW * sa, ya - 0.6);
+    g.lineTo(xb + ROADW * sb, yb); g.lineTo(xb - ROADW * sb, yb);
+    g.closePath(); g.fill();
+  }
+
+  // wet sheen: subtle bluish gloss band down the middle of the road
+  gr = g.createLinearGradient(0, horizon, 0, H);
+  gr.addColorStop(0, 'rgba(90,120,255,0.10)');
+  gr.addColorStop(0.3, 'rgba(60,80,200,0.05)');
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr;
+  strip(g, 0, 2 * EDGE, 0, zNear, zFar);
+
+  /* ---- neon markings ---- */
+  // outer glow ribbons
+  n.fillStyle = 'rgba(255,90,20,0.55)';
+  strip(n, -EDGE, 0.55, 1.6, zNear, zFar);
+  strip(n, EDGE, 0.55, 1.6, zNear, zFar);
+  n.fillStyle = 'rgba(255,120,35,0.85)';
+  strip(n, -EDGE, 0.2, 1.1, zNear, zFar);
+  strip(n, EDGE, 0.2, 1.1, zNear, zFar);
+  n.fillStyle = 'rgba(255,225,170,1)';
+  strip(n, -EDGE, 0.07, 0.7, zNear, zFar);
+  strip(n, EDGE, 0.07, 0.7, zNear, zFar);
+  // shoulder lines
+  n.fillStyle = 'rgba(255,110,30,0.75)';
+  strip(n, -SHOULDER, 0.13, 0.8, zNear, zFar * 0.85);
+  strip(n, SHOULDER, 0.13, 0.8, zNear, zFar * 0.85);
+
+  // hatched shoulder rungs
+  const RUNG = 11;
+  n.fillStyle = 'rgba(255,130,40,0.7)';
+  for (let d = Math.floor((pos + zNear) / RUNG) * RUNG + RUNG; d < pos + zFar * 0.7; d += RUNG) {
+    const z0 = d - pos, z1 = z0 + 3.5;
+    if (z0 < zNear) continue;
+    const fade = 1 - z0 / (zFar * 0.7);
+    n.globalAlpha = fade;
+    quadOnRoad(n, EDGE + 0.2, SHOULDER - 0.1, z0, z1, 0.12, 0.6);
+    quadOnRoad(n, -EDGE - 0.2, -SHOULDER + 0.1, z0, z1, 0.12, 0.6);
+  }
+  n.globalAlpha = 1;
+
+  // centre dashes (cyan) and lane dashes (pale blue)
+  const lines = [[0, 12, 4.5, 'rgba(80,200,255,0.95)', 0.16], [3.5, 12, 3, 'rgba(160,180,255,0.55)', 0.12], [-3.5, 12, 3, 'rgba(160,180,255,0.55)', 0.12]];
+  for (const [L, per, len, col, wd] of lines) {
+    n.fillStyle = col;
+    for (let d = Math.floor((pos + zNear) / per) * per; d < pos + zFar; d += per) {
+      let z0 = d - pos, z1 = z0 + len;
+      if (z1 < zNear) continue;
+      z0 = Math.max(z0, zNear);
+      const fade = clamp(1.25 - z0 / zFar, 0, 1);
+      n.globalAlpha = fade;
+      quadOnRoad(n, L, L, z0, Math.min(z1, zFar), wd, 0.6);
+    }
+  }
+  n.globalAlpha = 1;
+}
+
+function drawStreetlights() {
+  // collect lamp & reflector positions far-to-near
+  const items = [];
+  for (let d = Math.floor((pos + 3) / LAMP_SPACING) * LAMP_SPACING + LAMP_SPACING; d < pos + zFar * 0.95; d += LAMP_SPACING) items.push(['lamp', d - pos]);
+  const REF = 23;
+  for (let d = Math.floor((pos + 3) / REF) * REF + REF; d < pos + zFar * 0.6; d += REF) items.push(['ref', d - pos]);
+  for (const c of cars) items.push(['car', c.d - pos, c]);
+  items.push(['lead', lead.d - pos, lead]);
+  items.sort((a, b) => b[1] - a[1]);
+
+  for (const [type, z, obj] of items) {
+    if (z < 2.5 || z > zFar) continue;
+    const sc = f / z;
+    const fog = Math.pow(z / zFar, 1.2);
+    if (type === 'lamp') {
+      for (const side of [-1, 1]) {
+        const L = side * 11.2;
+        const bx = px(z, L), by = py(z, 0), tyy = py(z, 9.5);
+        const hx = px(z, side * 8.4), hy = py(z, 9.2);
+        const pw = Math.max(0.24 * sc, 0.8);
+        g.fillStyle = `rgba(${mix(6, 40, fog) | 0},${mix(8, 30, fog) | 0},${mix(14, 70, fog) | 0},1)`;
+        g.fillRect(bx - pw / 2, tyy, pw, by - tyy);
+        g.strokeStyle = g.fillStyle; g.lineWidth = Math.max(0.16 * sc, 0.7);
+        g.beginPath(); g.moveTo(bx, tyy + pw * 0.3); g.quadraticCurveTo(bx, hy, hx, hy); g.stroke();
+
+        const a = 1 - fog * 0.6;
+        // light cone
+        n.fillStyle = `rgba(150,190,255,${0.035 * a})`;
+        n.beginPath(); n.moveTo(hx - 0.4 * sc, hy); n.lineTo(hx + 0.4 * sc, hy);
+        n.lineTo(px(z, side * 8.4 + 3.2), by); n.lineTo(px(z, side * 8.4 - 3.2), by); n.closePath(); n.fill();
+        // lamp head
+        const lr = clamp(0.4 * sc, 1.2, H * 0.012);
+        n.fillStyle = `rgba(215,235,255,${a})`;
+        n.beginPath(); n.ellipse(hx, hy + lr * 0.2, lr * 1.3, lr * 0.45, 0, 0, TAU); n.fill();
+        const fr = clamp(1.3 * sc, 3, H * 0.045);
+        const gr = n.createRadialGradient(hx, hy, 0, hx, hy, fr);
+        gr.addColorStop(0, `rgba(170,210,255,${0.32 * a})`); gr.addColorStop(1, 'rgba(120,160,255,0)');
+        n.fillStyle = gr; n.fillRect(hx - fr, hy - fr, fr * 2, fr * 2);
+        // wet-road reflection streak under the lamp
+        const rx0 = px(z, side * 8.4), ry0 = by;
+        const len = Math.min(H * 0.35, 30 * sc);
+        const rw = Math.max(0.5 * sc, 1);
+        const rg = n.createLinearGradient(0, ry0, 0, ry0 + len);
+        rg.addColorStop(0, `rgba(140,190,255,${0.3 * a})`); rg.addColorStop(1, 'rgba(120,160,255,0)');
+        n.fillStyle = rg; n.fillRect(rx0 - rw / 2, ry0, rw, len);
+      }
+    } else if (type === 'ref') {
+      const a = clamp(1 - z / (zFar * 0.6), 0, 1);
+      for (const side of [-1, 1]) {
+        const x = px(z, side * 10.2), y = py(z, 0.9);
+        const r = Math.max(0.09 * sc, 0.7);
+        g.fillStyle = 'rgba(8,8,14,1)';
+        g.fillRect(x - r * 0.6, y, r * 1.2, Math.max(0.9 * sc, 1));
+        n.fillStyle = side < 0 ? `rgba(255,160,60,${a})` : `rgba(255,70,50,${a})`;
+        n.fillRect(x - r, y - r, r * 2, r * 2);
+      }
+    } else {
+      // vehicles: oncoming (headlights) or lead (taillights)
+      const c = obj, oncoming = type === 'car';
+      const x = px(z, c.L), yb = py(z, 0), yt = py(z, 1.35);
+      const hw = 0.95 * sc;
+      g.fillStyle = 'rgba(4,4,8,1)';
+      g.beginPath(); g.moveTo(x - hw, yb); g.lineTo(x - hw, py(z, 0.85)); g.lineTo(x - hw * 0.7, yt);
+      g.lineTo(x + hw * 0.7, yt); g.lineTo(x + hw, py(z, 0.85)); g.lineTo(x + hw, yb); g.fill();
+      const ly = py(z, 0.7), lr = Math.max(0.2 * sc, 1);
+      const a = 1 - fog * 0.5;
+      if (oncoming) {
+        for (const s of [-1, 1]) {
+          const lx = x + s * 0.65 * sc;
+          const fr = Math.max(3 * sc, 5);
+          const gr = n.createRadialGradient(lx, ly, 0, lx, ly, fr);
+          gr.addColorStop(0, `rgba(235,245,255,${a})`); gr.addColorStop(0.15, `rgba(190,215,255,${0.6 * a})`); gr.addColorStop(1, 'rgba(150,180,255,0)');
+          n.fillStyle = gr; n.fillRect(lx - fr, ly - fr, fr * 2, fr * 2);
+          n.fillStyle = `rgba(255,255,255,${a})`;
+          n.beginPath(); n.arc(lx, ly, lr, 0, TAU); n.fill();
+          // reflection on wet road
+          const len = Math.min(H * 0.3, 20 * sc), rw = Math.max(0.4 * sc, 1);
+          const rg = n.createLinearGradient(0, yb, 0, yb + len);
+          rg.addColorStop(0, `rgba(200,220,255,${0.35 * a})`); rg.addColorStop(1, 'rgba(200,220,255,0)');
+          n.fillStyle = rg; n.fillRect(lx - rw / 2, yb, rw, len);
+        }
+        // anamorphic streak
+        n.fillStyle = `rgba(140,180,255,${0.25 * a})`;
+        n.fillRect(x - 6 * sc, ly - Math.max(0.04 * sc, 0.5), 12 * sc, Math.max(0.08 * sc, 1));
+      } else {
+        for (const s of [-1, 1]) {
+          const lx = x + s * 0.7 * sc;
+          n.fillStyle = `rgba(255,40,50,${a})`;
+          n.fillRect(lx - lr * 1.5, ly - lr * 0.6, lr * 3, lr * 1.2);
+          const fr = Math.max(1.4 * sc, 4);
+          const gr = n.createRadialGradient(lx, ly, 0, lx, ly, fr);
+          gr.addColorStop(0, `rgba(255,50,60,${0.5 * a})`); gr.addColorStop(1, 'rgba(255,20,40,0)');
+          n.fillStyle = gr; n.fillRect(lx - fr, ly - fr, fr * 2, fr * 2);
+          const len = Math.min(H * 0.2, 9 * sc), rw = Math.max(0.35 * sc, 1);
+          const rg = n.createLinearGradient(0, yb, 0, yb + len);
+          rg.addColorStop(0, `rgba(255,50,60,${0.3 * a})`); rg.addColorStop(1, 'rgba(255,50,60,0)');
+          n.fillStyle = rg; n.fillRect(lx - rw / 2, yb, rw, len);
+        }
+      }
+    }
+  }
+}
+
+// Neon layer -> composite sharp + multi-scale blur (cheap bloom)
+function bloom(strength) {
+  bctx[0].clearRect(0, 0, blur[0].width, blur[0].height);
+  bctx[0].drawImage(neon, 0, 0, blur[0].width, blur[0].height);
+  for (let i = 1; i < blur.length; i++) {
+    bctx[i].clearRect(0, 0, blur[i].width, blur[i].height);
+    bctx[i].drawImage(blur[i - 1], 0, 0, blur[i].width, blur[i].height);
+  }
+  g.globalCompositeOperation = 'lighter';
+  g.drawImage(neon, 0, 0);
+  g.globalAlpha = 0.7 * strength; g.drawImage(blur[1], 0, 0, W, H);
+  g.globalAlpha = 0.8 * strength; g.drawImage(blur[2], 0, 0, W, H);
+  g.globalAlpha = 0.9 * strength; g.drawImage(blur[3], 0, 0, W, H);
+  g.globalAlpha = 1;
+  g.globalCompositeOperation = 'source-over';
+  n.setTransform(1, 0, 0, 1, 0, 0);
+  n.clearRect(0, 0, W, H);
+}
+
+/* ---------- dashboard (designed in a 1600x900 space, bottom-aligned) ---------- */
+function dashXf() {
+  const s = Math.max(Math.min(W / 1600, H / 900), H / 1500);
+  return { s, ox: (W - 1600 * s) / 2, oy: H - 900 * s };
+}
+
+function drawDashboard(speedKmh, rpm) {
+  const { s, ox, oy } = dashXf();
+  g.setTransform(s, 0, 0, s, ox, oy);
+  n.setTransform(s, 0, 0, s, ox, oy);
+
+  // windshield glare from the instruments
+  let gr = g.createRadialGradient(690, 650, 0, 690, 650, 420);
+  gr.addColorStop(0, 'rgba(255,140,50,0.07)'); gr.addColorStop(1, 'rgba(255,140,50,0)');
+  g.fillStyle = gr; g.fillRect(270, 230, 840, 440);
+
+  // dash body
+  const dashPath = new Path2D('M -900 900 L -900 655 C 100 650, 600 630, 820 652 C 1100 676, 1500 688, 2600 700 L 2600 900 Z');
+  gr = g.createLinearGradient(0, 640, 0, 900);
+  gr.addColorStop(0, '#15161f'); gr.addColorStop(0.08, '#0a0b11'); gr.addColorStop(1, '#030305');
+  g.fillStyle = gr; g.fill(dashPath);
+  // cluster hood
+  const hood = new Path2D('M 360 668 C 390 606, 960 598, 990 668 Z');
+  g.fillStyle = '#0b0c12'; g.fill(hood);
+  // rim highlight reflecting the neon road
+  const rim = new Path2D('M -900 655 C 100 650, 600 630, 820 652 C 1100 676, 1500 688, 2600 700');
+  gr = g.createLinearGradient(0, 0, 1600, 0);
+  gr.addColorStop(0, 'rgba(255,110,40,0.45)'); gr.addColorStop(0.45, 'rgba(110,150,255,0.25)');
+  gr.addColorStop(0.75, 'rgba(255,120,50,0.35)'); gr.addColorStop(1, 'rgba(255,90,30,0.5)');
+  g.strokeStyle = gr; g.lineWidth = 2.2; g.stroke(rim);
+  g.strokeStyle = 'rgba(160,140,255,0.22)'; g.lineWidth = 1.5;
+  g.stroke(new Path2D('M 362 667 C 392 607, 958 599, 988 667'));
+
+  // cluster recess & console
+  g.fillStyle = '#020203';
+  roundRect(g, 438, 676, 500, 214, 18); g.fill();
+  g.fillStyle = '#06070b';
+  roundRect(g, 1120, 715, 290, 185, 10); g.fill();
+  g.strokeStyle = 'rgba(90,100,140,0.25)'; g.lineWidth = 1.2;
+  roundRect(g, 1120, 715, 290, 185, 10); g.stroke();
+
+  // --- warning lights row
+  const warn = ['#ff3b3b', '#ffb03b', '#3bff7a', '#ff3b3b', '#3ba8ff', '#ffb03b', '#ff3b3b', '#3bff7a', '#ffb03b', '#ff3b3b', '#ffffff', '#ff3b3b'];
+  warn.forEach((c, i) => {
+    const on = (i * 7 + 3) % 5 < 2 || (i === 4 && Math.sin(t * 6) > 0);
+    n.globalAlpha = on ? 0.9 : 0.08;
+    n.fillStyle = c;
+    n.fillRect(468 + i * 37, 690, 24, 11);
+  });
+  n.globalAlpha = 1;
+
+  // --- VFD tachometer bar
+  const SEG = 28, lit = rpm * SEG;
+  for (let j = 0; j < SEG; j++) {
+    const on = j < lit;
+    const col = j >= 23 ? [255, 60, 50] : [255, 170, 60];
+    n.fillStyle = on ? `rgba(${col[0]},${col[1]},${col[2]},${j + 1 > lit ? 0.4 + 0.6 * (lit - j) : 1})` : 'rgba(255,140,40,0.07)';
+    n.fillRect(462 + j * 16, 738, 12, 30 - (j < 8 ? 0 : 0));
+  }
+  n.font = '600 13px ui-monospace, "DejaVu Sans Mono", monospace';
+  n.fillStyle = 'rgba(255,165,70,0.85)';
+  n.textAlign = 'center';
+  for (let j = 0; j <= 7; j++) n.fillText(String(j), 468 + j * 64, 731);
+
+  // --- speed readout
+  n.textAlign = 'left';
+  n.font = 'bold 34px ui-monospace, "DejaVu Sans Mono", monospace';
+  n.fillStyle = 'rgba(255,90,40,0.12)'; n.fillText('888', 468, 808);
+  n.fillStyle = 'rgba(255,175,70,1)';
+  n.fillText(String(Math.round(speedKmh)).padStart(3, ' '), 468, 808);
+  n.font = '600 14px ui-monospace, "DejaVu Sans Mono", monospace';
+  n.fillText('km/h', 538, 808);
+  n.fillStyle = 'rgba(255,160,70,0.75)';
+  n.fillText('ODO ' + String(Math.floor(42817 + pos / 1000)).padStart(6, '0'), 800, 808);
+  n.fillText('D', 750, 808);
+
+  // --- round gauges
+  const gauges = [[620, 852, 0.55 + 0.04 * Math.sin(t * 0.3)], [720, 852, rpm], [820, 852, 0.42 + 0.02 * Math.sin(t * 0.7)]];
+  for (const [gx, gy, v] of gauges) {
+    n.strokeStyle = 'rgba(120,170,255,0.55)'; n.lineWidth = 2;
+    n.beginPath(); n.arc(gx, gy, 32, 0, TAU); n.stroke();
+    n.strokeStyle = 'rgba(200,220,255,0.6)'; n.lineWidth = 1.5;
+    for (let k = 0; k <= 8; k++) {
+      const a = Math.PI * 0.8 + k / 8 * Math.PI * 1.4;
+      n.beginPath(); n.moveTo(gx + Math.cos(a) * 25, gy + Math.sin(a) * 25); n.lineTo(gx + Math.cos(a) * 30, gy + Math.sin(a) * 30); n.stroke();
+    }
+    const a = Math.PI * 0.8 + clamp(v, 0, 1) * Math.PI * 1.4;
+    n.strokeStyle = 'rgba(255,90,40,1)'; n.lineWidth = 2.5;
+    n.beginPath(); n.moveTo(gx, gy); n.lineTo(gx + Math.cos(a) * 26, gy + Math.sin(a) * 26); n.stroke();
+    n.fillStyle = 'rgba(255,120,60,0.8)'; n.beginPath(); n.arc(gx, gy, 3, 0, TAU); n.fill();
+  }
+
+  // --- radio display
+  g.fillStyle = '#010804'; roundRect(g, 1145, 735, 240, 38, 4); g.fill();
+  n.save();
+  n.beginPath(); n.rect(1150, 737, 230, 34); n.clip();
+  n.font = 'bold 19px ui-monospace, "DejaVu Sans Mono", monospace';
+  n.fillStyle = 'rgba(80,255,140,0.95)';
+  const msg = 'FM 88.3   ' + TITLE + ' RADIO   ·   NOW PLAYING: MIDNIGHT HIGHWAY   ·   ';
+  const mw = n.measureText(msg).width;
+  const off = (t * 45) % mw;
+  n.fillText(msg + msg, 1152 - off, 761);
+  n.restore();
+  // spectrum
+  for (let i = 0; i < 22; i++) {
+    const v = 0.25 + 0.75 * Math.abs(Math.sin(t * (2 + i * 0.37) + i * 1.7) * Math.sin(t * 1.3 + i));
+    const bh = 4 + v * 26;
+    n.fillStyle = 'rgba(80,255,140,0.75)';
+    n.fillRect(1150 + i * 10.5, 818 - bh, 7, bh);
+  }
+  // clock
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0'), mm = String(now.getMinutes()).padStart(2, '0');
+  g.fillStyle = '#010804'; roundRect(g, 1210, 840, 110, 36, 4); g.fill();
+  n.font = 'bold 24px ui-monospace, "DejaVu Sans Mono", monospace';
+  n.fillStyle = 'rgba(80,255,140,0.95)';
+  n.textAlign = 'center';
+  n.fillText(hh + (Math.floor(now.getTime() / 500) % 2 ? ':' : ' ') + mm, 1265, 867);
+  n.textAlign = 'left';
+
+  // vent slats & switch glints
+  g.fillStyle = 'rgba(20,22,32,1)';
+  for (let i = 0; i < 4; i++) g.fillRect(1440, 735 + i * 14, 140, 6);
+  n.fillStyle = 'rgba(255,140,60,0.6)';
+  for (let i = 0; i < 4; i++) n.fillRect(1150 + i * 60, 890, 20, 3);
+
+  bloom(1);
+
+  // --- steering wheel (in front of cluster)
+  g.setTransform(s, 0, 0, s, ox, oy);
+  g.save();
+  g.translate(420, 1085);
+  g.rotate(steer);
+  g.strokeStyle = '#040507'; g.lineWidth = 46;
+  g.beginPath(); g.ellipse(0, 0, 395, 410, 0, 0, TAU); g.stroke();
+  g.strokeStyle = 'rgba(40,44,60,0.6)'; g.lineWidth = 2.5;
+  g.beginPath(); g.ellipse(0, 0, 372, 387, 0, Math.PI * 1.05, Math.PI * 1.95); g.stroke();
+  gr = g.createLinearGradient(-395, -410, 395, -200);
+  gr.addColorStop(0, 'rgba(255,110,40,0.45)'); gr.addColorStop(0.5, 'rgba(120,150,255,0.3)'); gr.addColorStop(1, 'rgba(255,120,50,0.45)');
+  g.strokeStyle = gr; g.lineWidth = 3;
+  g.beginPath(); g.ellipse(0, 0, 418, 433, 0, Math.PI * 1.1, Math.PI * 1.9); g.stroke();
+  // spokes
+  g.fillStyle = '#040507';
+  g.fillRect(-380, -18, 300, 60);
+  g.fillRect(80, -18, 300, 60);
+  g.restore();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  n.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function drawFrame() {
+  const { s, oy } = dashXf();
+  const yDash = oy + 655 * s;
+  // left side window tint + A-pillar
+  g.fillStyle = 'rgba(2,3,10,0.55)';
+  g.beginPath(); g.moveTo(-1, -1); g.lineTo(W * 0.075, -1); g.lineTo(W * 0.13, yDash); g.lineTo(-1, yDash); g.closePath(); g.fill();
+  let gr = g.createLinearGradient(W * 0.07, 0, W * 0.23, 0);
+  gr.addColorStop(0, '#030407'); gr.addColorStop(1, '#090a10');
+  g.fillStyle = gr;
+  g.beginPath(); g.moveTo(W * 0.072, -1); g.lineTo(W * 0.14, -1); g.lineTo(W * 0.235, yDash + 4); g.lineTo(W * 0.128, yDash + 4); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(110,120,190,0.18)'; g.lineWidth = Math.max(1, H / 600);
+  g.beginPath(); g.moveTo(W * 0.14, 0); g.lineTo(W * 0.235, yDash); g.stroke();
+  // roof
+  gr = g.createLinearGradient(0, 0, 0, H * 0.085);
+  gr.addColorStop(0, '#020205'); gr.addColorStop(0.55, '#06070d'); gr.addColorStop(1, 'rgba(6,7,13,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H * 0.085);
+}
+
+function drawTitle() {
+  if (!showTitle) return;
+  const sz = Math.round(H * 0.058);
+  g.save();
+  g.font = `900 ${sz}px "Arial Black", "DejaVu Sans", Impact, sans-serif`;
+  if ('letterSpacing' in g) g.letterSpacing = `${Math.round(sz * 0.06)}px`;
+  g.textBaseline = 'alphabetic';
+  const x = W * 0.025, y = H - H * 0.035;
+  g.globalCompositeOperation = 'lighter';
+  g.fillStyle = 'rgba(0,200,255,0.35)'; g.fillText(TITLE, x - sz * 0.05, y);
+  g.fillStyle = 'rgba(255,0,120,0.45)'; g.fillText(TITLE, x + sz * 0.05, y);
+  g.globalCompositeOperation = 'source-over';
+  g.shadowColor = 'rgba(255,60,180,0.9)'; g.shadowBlur = sz * 0.5;
+  g.fillStyle = '#ffc2ea'; g.fillText(TITLE, x, y);
+  g.shadowBlur = 0;
+  g.restore();
+}
+
+/* ================================================================== *
+ *  Simulation                                                         *
+ * ================================================================== */
+function update(dt) {
+  t += dt;
+  speed = 33 + 4 * Math.sin(t * 0.05) + 1.5 * Math.sin(t * 0.17);
+  pos += speed * dt;
+  const k = curv(pos);
+  heading += k * speed * dt;
+  headingAvg += (heading - headingAvg) * Math.min(1, dt * 0.03);
+  steer += ((-k * 900) - steer) * Math.min(1, dt * 2.5);
+  camX = 1.75 + 0.18 * Math.sin(t * 0.21) + k * 150;
+  horizon = horizon0 + Math.sin(t * 9.1) * H * 0.0006 + Math.sin(t * 2.3 + Math.sin(pos * 0.05)) * H * 0.0012;
+
+  // road centreline relative to camera heading
+  let x = 0, dx = 0;
+  for (let i = 0; i < NS; i++) {
+    const z = zNear + i * DZ;
+    dx += curv(pos + z) * DZ;
+    x += dx * DZ;
+    RX[i] = x;
+  }
+
+  // traffic
+  nextCar -= dt;
+  if (nextCar <= 0) {
+    nextCar = 4 + rand() * 14;
+    cars.push({ d: pos + zFar, L: rand() < 0.7 ? -1.75 : -5.25, v: -(24 + rand() * 10) });
+  }
+  for (const c of cars) c.d += c.v * dt;
+  cars = cars.filter(c => c.d - pos > 1);
+  lead.v = speed + 3 * Math.sin(t * 0.08);
+  lead.d += lead.v * dt;
+  const gap = lead.d - pos;
+  if (gap < 70) lead.d = pos + 70;
+  if (gap > 520) lead.d = pos + 520;
+
+  // sky events
+  nextShoot -= dt;
+  if (!shooting && nextShoot <= 0) {
+    nextShoot = 10 + rand() * 20;
+    const dir = rand() < 0.5 ? -1 : 1;
+    shooting = { x: W * (0.2 + rand() * 0.6), y: H * (0.05 + rand() * 0.25), vx: dir * W * (0.5 + rand() * 0.4), vy: H * (0.15 + rand() * 0.2), age: 0, life: 0.6 + rand() * 0.5 };
+  }
+  if (shooting) { shooting.age += dt; if (shooting.age > shooting.life) shooting = null; }
+
+  nextGlitch -= dt;
+  if (nextGlitch <= 0) { glitch = 1; nextGlitch = 8 + rand() * 18; }
+  glitch = Math.max(0, glitch - dt * 3.5);
+}
+
+function render() {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  n.setTransform(1, 0, 0, 1, 0, 0);
+  n.clearRect(0, 0, W, H);
+  const skyShift = (heading - headingAvg) * f;
+  drawSky(skyShift);
+  drawMountains(-heading * f);
+  drawRoad();
+  drawStreetlights();
+  bloom(1);
+  drawDashboard(speed * 3.6, 0.42 + (speed - 29) / 25 + 0.02 * Math.sin(t * 7));
+  drawFrame();
+  drawTitle();
+
+  if (gl) {
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+    gl.uniform2f(uRes, W, H);
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uGlitch, glitch);
+    gl.uniform1f(uFx, useFx ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  } else {
+    out2d.drawImage(scene, 0, 0);
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* ================================================================== *
+ *  Input / UI                                                         *
+ * ================================================================== */
+let idleTimer;
+const hint = document.getElementById('hint');
+function wake() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), 2000);
+}
+if (SCREENSAVER) {
+  hint.remove();
+  document.body.classList.add('idle');
+  let start = null, armed = false;
+  setTimeout(() => armed = true, 1500);
+  const quit = () => { if (armed) window.close(); };
+  addEventListener('keydown', quit);
+  addEventListener('mousedown', quit);
+  addEventListener('touchstart', quit);
+  addEventListener('mousemove', e => {
+    if (!start) { start = [e.clientX, e.clientY]; return; }
+    if (Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 20) quit();
+  });
+} else {
+  setTimeout(() => hint.classList.add('hide'), 4500);
+  addEventListener('mousemove', wake);
+  wake();
+  addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'f') toggleFs();
+    else if (k === 't') showTitle = !showTitle;
+    else if (k === 'm') useFx = !useFx;
+    else if (k === ' ') { paused = !paused; e.preventDefault(); }
+    else if (k === 'g') glitch = 1;
+  });
+  addEventListener('dblclick', toggleFs);
+}
+function toggleFs() {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+  else document.exitFullscreen?.();
+}
+
+addEventListener('resize', () => { clearTimeout(resize.t); resize.t = setTimeout(resize, 120); });
+resize();
+update(0.016);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+#app, #app canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+body.idle { cursor: none; }
+
+#hint {
+  position: fixed; right: 16px; top: 14px; z-index: 2;
+  font: 12px/1.4 ui-monospace, "DejaVu Sans Mono", monospace; letter-spacing: .08em;
+  color: rgba(255, 190, 230, .75); text-shadow: 0 0 6px rgba(255, 60, 170, .8);
+  transition: opacity 1.2s; pointer-events: none; user-select: none; text-align: right;
+}
+#hint.hide { opacity: 0; }
