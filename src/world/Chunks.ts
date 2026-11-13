@@ -83,6 +83,27 @@ function lampHeadMaterial() {
   });
 }
 
+/**
+ * Terrain fades out with distance (650-900 m), so chunks built at the far end
+ * of the view (~1100 m down the road, closer when it curves) don't pop up as
+ * hard silhouettes against the sky; it fades in as you approach.
+ * Drawn in the transparent pass (after the sky and mountain rings), still
+ * writing depth, so near terrain behaves like opaque geometry.
+ */
+function terrainMaterial() {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, transparent: true });
+  m.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader
+      .replace('void main() {', 'varying float vTerrainDist;\nvoid main() {')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n  vTerrainDist = length(mvPosition.xyz);');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('void main() {', 'varying float vTerrainDist;\nvoid main() {')
+      .replace('#include <fog_fragment>', '#include <fog_fragment>\n  gl_FragColor.a *= 1.0 - smoothstep(650.0, 900.0, vTerrainDist);');
+  };
+  m.customProgramCacheKey = () => 'terrain-fade';
+  return m;
+}
+
 function roadMaterial(p: ScenePreset) {
   return new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
@@ -168,7 +189,7 @@ export class ChunkManager {
     if (this.mats) Object.values(this.mats).forEach(m => m.dispose());
     this.mats = {
       road: roadMaterial(p),
-      terrain: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+      terrain: terrainMaterial(),
       dark: new THREE.MeshLambertMaterial({ color: 0x07080d }),
       neon: neonMaterial(),
       lampHead: lampHeadMaterial(),
