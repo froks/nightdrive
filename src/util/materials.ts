@@ -78,6 +78,14 @@ export function setGlowViewport(bufferHeight: number, fovDeg: number) {
 }
 /** Pixels per metre at distance 1 (for size-attenuated point sprites). */
 export const getGlowScale = () => glowScale;
+/** Keep a material's `uScale` uniform in sync with the viewport (see setGlowViewport). */
+export function trackGlowScale<M extends THREE.ShaderMaterial>(m: M): M {
+  m.uniforms.uScale.value = glowScale;
+  glowPointMats.add(m);
+  const dispose = m.dispose.bind(m);
+  m.dispose = () => { glowPointMats.delete(m); dispose(); };
+  return m;
+}
 export function glowPointsMaterial(color: THREE.ColorRepresentation, intensity: number, sizeMeters: number, minPx = 3.5) {
   const m = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([

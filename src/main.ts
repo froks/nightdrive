@@ -338,4 +338,4 @@ for (let i = 0; i < 12; i++) chunks.update(sim.pos, origin);
 requestAnimationFrame(loop);
 
 // expose for debugging in the console
-Object.assign(window, { nightdrive: { sim, scene, camera, post, renderer, player, applyPreset, presets, skyEvents } });
+Object.assign(window, { nightdrive: { sim, scene, camera, post, renderer, player, applyPreset, presets, skyEvents, traffic } });

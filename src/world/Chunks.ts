@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { DS, Track } from './Track';
 import type { HDR, ScenePreset } from '../scenes/types';
-import { additiveMaterial, colorize, glowPointsMaterial, neonMaterial, stripAttrs } from '../util/materials';
+import { additiveMaterial, colorize, getGlowScale, glowPointsMaterial, stripAttrs, trackGlowScale } from '../util/materials';
 import { fbm, ridged, smoothstep } from '../util/math';
 
 export const CHUNK_LEN = 60;
@@ -24,11 +24,13 @@ class Builder {
   pos: number[] = [];
   col: number[] = [];
   ext: number[] = [];
+  lod: number[] = [];
   idx: number[] = [];
-  v(p: THREE.Vector3, c?: HDR, e?: [number, number]) {
+  v(p: THREE.Vector3, c?: HDR, e?: [number, number], lod?: [number, number, number, number]) {
     this.pos.push(p.x, p.y, p.z);
     if (c) this.col.push(c[0], c[1], c[2]);
     if (e) this.ext.push(e[0], e[1]);
+    if (lod) this.lod.push(lod[0], lod[1], lod[2], lod[3]);
     return this.pos.length / 3 - 1;
   }
   /** a,b,c,d counter-clockwise when seen from above (L increasing to the right, s forward). */
@@ -40,6 +42,7 @@ class Builder {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     if (this.col.length) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     if (extName && this.ext.length) g.setAttribute(extName, new THREE.Float32BufferAttribute(this.ext, 2));
+    if (this.lod.length) g.setAttribute('aLod', new THREE.Float32BufferAttribute(this.lod, 4));
     g.setIndex(this.idx);
     return g;
   }
@@ -79,6 +82,103 @@ function lampHeadMaterial() {
         vec3 c = vColor * uLevel * (1.0 - smoothstep(60.0, 110.0, vDepth));
         float fog = 1.0 - exp(-fogDensity * fogDensity * vDepth * vDepth);
         gl_FragColor = vec4(mix(c, fogColor, fog * 0.6), 1.0);
+      }`,
+  });
+}
+
+/** `aLod.w` kinds for markingMaterial */
+const LOD_LINE = 0, LOD_DASH = 1, LOD_DASH_AVG = 2, LOD_SMALL = 3;
+
+/**
+ * Road markings and reflector cubes (HDR vertex colours). Far away these thin
+ * strips get narrower than a pixel and shimmer while driving (bloom amplifies
+ * it), so per vertex (`aLod`: xyz = offset from the line's centre, w = kind):
+ *  - lines are widened to at least ~1.5 px on screen and dimmed by the same
+ *    factor (same total light, no popping); drawn additively so the wider,
+ *    dimmer strip doesn't cover the road;
+ *  - dashes and hatch rungs fade out once their 12 m period gets only a few
+ *    pixels tall on screen, while a dim continuous line (brightness x duty
+ *    cycle) fades in - what the dashes average out to;
+ *  - small lights (reflector cubes) fade out from 60 to 110 m.
+ */
+function markingMaterial() {
+  const m = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uScale: { value: getGlowScale() } }]),
+    fog: true,
+    side: THREE.DoubleSide,
+    // additive (they're emissive): a widened, dimmed line must not paint over the road under it
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: /* glsl */`
+      attribute vec3 color;
+      attribute vec4 aLod;
+      uniform float uScale; // pixels per metre at 1 m distance (= half viewport height / tan(fov/2))
+      varying vec3 vColor;
+      varying float vDepth, vFade;
+      void main() {
+        // on-screen half width in pixels (foreshortening included: far away, where the road
+        // curves, a line runs across the view and its width is squashed to nothing)
+        vec4 ce = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 cc = projectionMatrix * modelViewMatrix * vec4(position - aLod.xyz, 1.0);
+        vec2 px = (ce.xy / max(ce.w, 0.01) - cc.xy / max(cc.w, 0.01)) * uScale / vec2(projectionMatrix[0][0], projectionMatrix[1][1]);
+        float k = dot(aLod.xyz, aLod.xyz) > 0.0 ? clamp(0.75 / max(length(px), 1e-4), 1.0, 24.0) : 1.0;
+        vec3 p = position + aLod.xyz * (k - 1.0);
+        float z = max(0.1, ce.w);
+        // distance at which the 12 m dash period is ~3 px tall (eye ~1.2 m above the road)
+        float zd = sqrt(uScale * 4.8);
+        float far = smoothstep(0.8 * zd, 1.3 * zd, z);
+        float kind = aLod.w;
+        float fade = kind < 0.5 ? 1.0 : kind < 1.5 ? 1.0 - far : kind < 2.5 ? far : 1.0 - smoothstep(60.0, 110.0, z);
+        vFade = fade;
+        vColor = color * fade / k;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vDepth = -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float fogDensity;
+      varying vec3 vColor;
+      varying float vDepth, vFade;
+      void main() {
+        if (vFade < 0.004) discard;
+        float fog = 1.0 - exp(-fogDensity * fogDensity * vDepth * vDepth);
+        gl_FragColor = vec4(vColor * (1.0 - 0.75 * fog), 1.0);
+      }`,
+  });
+  return trackGlowScale(m);
+}
+
+/**
+ * Wet-road reflections of the street lamps (additive). Far away the streak is
+ * only a pixel or two tall at this grazing angle and flickers, so it fades out
+ * from 70 to 130 m (the lamp's light pool in the road shader stays).
+ */
+function reflectionMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uLevel: { value: 1 } }]),
+    fog: true,
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: /* glsl */`
+      attribute vec3 color;
+      varying vec3 vColor;
+      varying float vDepth;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vDepth = -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      uniform float fogDensity, uLevel;
+      varying vec3 vColor;
+      varying float vDepth;
+      void main() {
+        float fog = 1.0 - exp(-fogDensity * fogDensity * vDepth * vDepth);
+        gl_FragColor = vec4(vColor * uLevel * (1.0 - smoothstep(70.0, 130.0, vDepth)) * (1.0 - fog), 1.0);
       }`,
   });
 }
@@ -142,9 +242,14 @@ function roadMaterial(p: ScenePreset) {
         float along = exp(-ds * ds / 110.0);
         float lat = exp(-pow(L - uHeadL, 2.0) / 28.0) + exp(-pow(L + uHeadL, 2.0) / 28.0);
         float pool = along * (0.3 + lat) * uLamps;
-        float grain = h21(floor(vec2(L * 14.0, s * 14.0)));
-        vec3 col = uAsphalt * (0.8 + 0.4 * grain) + uPool * pool;
-        col += uPool * 2.0 * step(0.993, grain) * (0.3 + along);      // wet sparkle
+        vec2 gp = vec2(L * 14.0, s * 14.0);
+        float grain = h21(floor(gp));
+        // the grain / sparkle cells are ~7 cm: fade them out once a cell gets smaller than
+        // a pixel, otherwise the distant road shimmers while driving (bloom amplifies it)
+        vec2 fw = fwidth(gp);
+        float detail = 1.0 - smoothstep(0.25, 0.7, max(fw.x, fw.y));
+        vec3 col = uAsphalt * (0.8 + 0.4 * mix(0.5, grain, detail)) + uPool * pool;
+        col += uPool * 2.0 * step(0.993, grain) * (0.3 + along) * detail;      // wet sparkle
         col *= mix(1.0, 0.65, smoothstep(7.2, 7.6, abs(L)));           // rougher shoulder
         gl_FragColor = vec4(col, 1.0);
         #include <fog_fragment>
@@ -167,11 +272,14 @@ export class ChunkManager {
     road: THREE.ShaderMaterial;
     terrain: THREE.MeshLambertMaterial;
     dark: THREE.MeshLambertMaterial;
-    neon: THREE.MeshBasicMaterial;
+    /** road markings + reflector cubes */
+    marking: THREE.ShaderMaterial;
     /** lamp heads (own material so street lights can be dimmed without the road lines) */
     lampHead: THREE.ShaderMaterial;
-    /** lamp light cones + wet-road reflections */
+    /** lamp light cones */
     add: THREE.MeshBasicMaterial;
+    /** wet-road reflections of the lamps */
+    refl: THREE.ShaderMaterial;
     glow: THREE.ShaderMaterial;
   };
   private p!: ScenePreset;
@@ -191,9 +299,10 @@ export class ChunkManager {
       road: roadMaterial(p),
       terrain: terrainMaterial(),
       dark: new THREE.MeshLambertMaterial({ color: 0x07080d }),
-      neon: neonMaterial(),
+      marking: markingMaterial(),
       lampHead: lampHeadMaterial(),
       add: additiveMaterial(),
+      refl: reflectionMaterial(),
       glow: glowPointsMaterial(p.lamps.glow, 1.6, 5),
     };
     this.lampBase = this.mats.glow.uniforms.uColor.value.clone();
@@ -206,6 +315,7 @@ export class ChunkManager {
     const m = this.mats;
     m.lampHead.uniforms.uLevel.value = k;
     m.add.color.setScalar(k);
+    m.refl.uniforms.uLevel.value = k;
     m.glow.uniforms.uColor.value.copy(this.lampBase).multiplyScalar(k);
     m.road.uniforms.uLamps.value = (this.p.lamps.enabled ? 1 : 0) * k;
   }
@@ -261,11 +371,14 @@ export class ChunkManager {
 
     /* ---------- neon markings ---------- */
     const neon = new Builder();
-    const ribbon = (sa: number, sb: number, L: number, w: number, c: HDR, y = 0.02) => {
+    const pa = new THREE.Vector3(), pb = new THREE.Vector3();
+    const ribbon = (sa: number, sb: number, L: number, w: number, c: HDR, y = 0.02, kind = LOD_LINE) => {
       const step = Math.min(DS, sb - sa);
       let prevA = -1, prevB = -1;
       for (let s = sa; s <= sb + 1e-6; s += step) {
-        const a = neon.v(rel(s, L - w / 2, y), c), b = neon.v(rel(s, L + w / 2, y), c);
+        pa.copy(rel(s, L - w / 2, y)); pb.copy(rel(s, L + w / 2, y));
+        const hx = (pb.x - pa.x) / 2, hy = (pb.y - pa.y) / 2, hz = (pb.z - pa.z) / 2;
+        const a = neon.v(pa, c, undefined, [-hx, -hy, -hz, kind]), b = neon.v(pb, c, undefined, [hx, hy, hz, kind]);
         if (prevA >= 0) neon.quad(prevA, prevB, b, a);
         prevA = a; prevB = b;
       }
@@ -283,7 +396,9 @@ export class ChunkManager {
       [-3.5, 12, 3, 0.12, p.road.lane],
     ];
     for (const [L, per, len, w, c] of dashes) {
-      for (let d = Math.ceil(s0 / per) * per; d < s1; d += per) ribbon(d, Math.min(d + len, s1), L, w, c);
+      for (let d = Math.ceil(s0 / per) * per; d < s1; d += per) ribbon(d, Math.min(d + len, s1), L, w, c, 0.02, LOD_DASH);
+      // what the dashes average out to far away
+      ribbon(s0, s1, L, w, [c[0] * len / per, c[1] * len / per, c[2] * len / per], 0.019, LOD_DASH_AVG);
     }
     // hatched shoulder rungs
     const RUNG = 11;
@@ -291,8 +406,9 @@ export class ChunkManager {
       for (const side of [-1, 1]) {
         const Lin = side * (ROAD.EDGE + 0.25), Lout = side * (ROAD.SHOULDER - 0.1), w = 0.12;
         const e = p.road.shoulder;
-        const a = neon.v(rel(d - w, Lin, 0.02), e), b = neon.v(rel(d + w, Lin, 0.02), e);
-        const c = neon.v(rel(d + 3.5 + w, Lout, 0.02), e), dd = neon.v(rel(d + 3.5 - w, Lout, 0.02), e);
+        const R: [number, number, number, number] = [0, 0, 0, LOD_DASH];
+        const a = neon.v(rel(d - w, Lin, 0.02), e, undefined, R), b = neon.v(rel(d + w, Lin, 0.02), e, undefined, R);
+        const c = neon.v(rel(d + 3.5 + w, Lout, 0.02), e, undefined, R), dd = neon.v(rel(d + 3.5 - w, Lout, 0.02), e, undefined, R);
         neon.quad(a, b, c, dd);
       }
     }
@@ -302,6 +418,7 @@ export class ChunkManager {
     const neonParts: THREE.BufferGeometry[] = [];
     const headParts: THREE.BufferGeometry[] = [];
     const addParts: THREE.BufferGeometry[] = [];
+    const reflParts: THREE.BufferGeometry[] = [];
     const glowPts: THREE.Vector3[] = [];
     const m4 = new THREE.Matrix4();
     const frame = { x: 0, y: 0, z: 0, heading: 0, fx: 0, fz: 0, rx: 0, rz: 0, grade: 0 };
@@ -342,7 +459,7 @@ export class ChunkManager {
           const a1 = V(L - hw, 0, cHi), b1 = V(L + hw, 0, cHi);
           const a2 = V(L - hw * 1.6, 28, c0), b2 = V(L + hw * 1.6, 28, c0);
           rb.quad(a0, b0, b1, a1); rb.quad(a1, b1, b2, a2);
-          addParts.push(rb.geometry().applyMatrix4(M));
+          reflParts.push(rb.geometry().applyMatrix4(M));
 
           glowPts.push(new THREE.Vector3(side * ROAD.HEAD_L, 9.2, 0).applyMatrix4(M));
         }
@@ -355,7 +472,12 @@ export class ChunkManager {
       for (const side of [-1, 1]) {
         dark.push(new THREE.BoxGeometry(0.12, 1.0, 0.12).translate(side * ROAD.REFLECTOR_L, 0.5, 0).applyMatrix4(M));
         const c: HDR = side < 0 ? [p.road.reflector[0], p.road.reflector[1] * 1.4, p.road.reflector[2]] : p.road.reflector;
-        neonParts.push(stripAttrs(colorize(new THREE.BoxGeometry(0.13, 0.13, 0.13).translate(side * ROAD.REFLECTOR_L, 0.9, 0), c)).applyMatrix4(M));
+        const cube = stripAttrs(colorize(new THREE.BoxGeometry(0.13, 0.13, 0.13).translate(side * ROAD.REFLECTOR_L, 0.9, 0), c)).applyMatrix4(M);
+        const n = cube.getAttribute('position').count;
+        const lod = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) lod[i * 4 + 3] = LOD_SMALL;
+        cube.setAttribute('aLod', new THREE.BufferAttribute(lod, 4));
+        neonParts.push(cube.index ? cube.toNonIndexed() : cube);
       }
     }
 
@@ -365,12 +487,21 @@ export class ChunkManager {
       pts.frustumCulled = false;
       group.add(pts);
     }
-    if (!neon.empty) neonParts.push(neon.geometry());
-    group.add(new THREE.Mesh(mergeGeometries(neonParts.map(g => g.index ? g : g)), this.mats.neon));
+    if (!neon.empty) neonParts.push(neon.geometry().toNonIndexed());
+    if (neonParts.length) {
+      const m = new THREE.Mesh(mergeGeometries(neonParts), this.mats.marking);
+      m.renderOrder = 1;
+      group.add(m);
+    }
     if (headParts.length) group.add(new THREE.Mesh(mergeGeometries(headParts), this.mats.lampHead));
     if (dark.length) group.add(new THREE.Mesh(mergeGeometries(dark), this.mats.dark));
     if (addParts.length) {
       const m = new THREE.Mesh(mergeGeometries(addParts), this.mats.add);
+      m.renderOrder = 2;
+      group.add(m);
+    }
+    if (reflParts.length) {
+      const m = new THREE.Mesh(mergeGeometries(reflParts), this.mats.refl);
       m.renderOrder = 2;
       group.add(m);
     }

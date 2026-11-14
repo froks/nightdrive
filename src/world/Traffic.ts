@@ -11,7 +11,15 @@ interface Car {
   L: number;
   v: number; // signed speed along track
   oncoming: boolean;
+  /** the small lamp boxes: hidden at distance, where they'd be sub-pixel and flicker */
+  lamps: THREE.Object3D;
 }
+
+/** beyond this distance only the (smooth) glow sprites are drawn, not the lamp boxes */
+const LAMP_BOX_DIST = 55;
+
+/** the car ahead: comes into view, follows a while, pulls away, stays gone a while */
+type LeadState = 'away' | 'arriving' | 'following' | 'leaving';
 
 const bodyMat = new THREE.MeshLambertMaterial({ color: 0x050508 });
 const neonMat = neonMaterial();
@@ -39,7 +47,9 @@ function carMesh(lights: HDR, front: boolean, glow: THREE.SpriteMaterial) {
     const p = new THREE.PlaneGeometry(w, len).rotateX(-Math.PI / 2).translate(sx, 0.03, zl + dir * len / 2);
     refl.push(stripAttrs(colorize(p, [lights[0] * k, lights[1] * k, lights[2] * k], (_x, _y, z) => 1 - Math.min(1, Math.abs(z - zl) / len))));
   }
-  g.add(new THREE.Mesh(mergeGeometries(parts), neonMat));
+  const lamps = new THREE.Mesh(mergeGeometries(parts), neonMat);
+  g.add(lamps);
+  g.userData.lamps = lamps;
   const rm = new THREE.Mesh(mergeGeometries(refl), addMat);
   rm.renderOrder = 2;
   g.add(rm);
@@ -50,6 +60,9 @@ export class Traffic {
   readonly group = new THREE.Group();
   private cars: Car[] = [];
   private lead!: Car;
+  private leadState: LeadState = 'away';
+  private leadTimer = 0;
+  private leadGap = 160;
   private nextSpawn = 3;
   private frame = makeFrame();
   private tmp = new THREE.Vector3();
@@ -66,18 +79,19 @@ export class Traffic {
     for (const c of this.cars) this.group.remove(c.obj);
     this.cars = [];
     if (this.lead) this.group.remove(this.lead.obj);
-    this.lead = { obj: carMesh(p.traffic.taillight, false, this.tailGlow), s: pos + 160, L: 1.75, v: 30, oncoming: false };
+    this.lead = this.makeCar(carMesh(p.traffic.taillight, false, this.tailGlow), pos + 160, 1.75, 30, false);
     this.group.add(this.lead.obj);
+    // start with a car ahead about half the time
+    if (rand() < 0.5) this.follow(pos, true);
+    else this.goAway();
   }
 
   update(dt: number, pos: number, speed: number, t: number, origin: THREE.Vector3) {
     this.nextSpawn -= dt;
     if (this.nextSpawn <= 0) {
       this.nextSpawn = (4 + rand() * 14) / Math.max(0.1, this.p.traffic.density);
-      const c: Car = {
-        obj: carMesh(this.p.traffic.headlight, true, this.headGlow),
-        s: pos + 1100, L: rand() < 0.7 ? -1.75 : -5.25, v: -(24 + rand() * 10), oncoming: true,
-      };
+      const c = this.makeCar(carMesh(this.p.traffic.headlight, true, this.headGlow),
+        pos + 1100, rand() < 0.7 ? -1.75 : -5.25, -(24 + rand() * 10), true);
       this.cars.push(c);
       this.group.add(c.obj);
     }
@@ -89,14 +103,61 @@ export class Traffic {
     });
 
     const lead = this.lead;
-    lead.v = speed + 3 * Math.sin(t * 0.08);
-    lead.s += lead.v * dt;
-    lead.s = Math.min(Math.max(lead.s, pos + 70), pos + 520);
-
-    for (const c of [...this.cars, lead]) this.place(c, origin);
+    this.updateLead(lead, dt, pos, speed, t);
+    for (const c of this.cars) this.place(c, pos, origin);
+    if (lead.obj.visible) this.place(lead, pos, origin);
   }
 
-  private place(c: Car, origin: THREE.Vector3) {
+  private makeCar(obj: THREE.Group, s: number, L: number, v: number, oncoming: boolean): Car {
+    return { obj, s, L, v, oncoming, lamps: obj.userData.lamps };
+  }
+
+  private follow(pos: number, now = false) {
+    this.leadState = 'following';
+    this.leadGap = 110 + rand() * 200;
+    this.leadTimer = 40 + rand() * 110;
+    if (now) this.lead.s = pos + this.leadGap;
+  }
+
+  private goAway() {
+    this.leadState = 'away';
+    this.lead.obj.visible = false;
+    this.leadTimer = (25 + rand() * 90) / Math.max(0.1, this.p.traffic.density);
+  }
+
+  private updateLead(lead: Car, dt: number, pos: number, speed: number, t: number) {
+    this.leadTimer -= dt;
+    const gap = lead.s - pos;
+    switch (this.leadState) {
+      case 'away':
+        if (this.leadTimer > 0) return;
+        // reappears far ahead in the haze, a bit slower than us, and we catch up
+        this.leadState = 'arriving';
+        this.leadGap = 110 + rand() * 200;
+        lead.s = pos + 750;
+        lead.obj.visible = true;
+        break;
+      case 'arriving':
+        lead.v = speed - Math.min(12, 3 + (gap - this.leadGap) * 0.06);
+        if (gap <= this.leadGap) this.follow(pos);
+        break;
+      case 'following':
+        lead.v = speed + 3 * Math.sin(t * 0.08) + (this.leadGap - gap) * 0.05;
+        if (this.leadTimer <= 0) this.leadState = 'leaving';
+        break;
+      case 'leaving':
+        // pulls away and vanishes into the distance
+        lead.v = speed + Math.min(12, 2 + (gap - this.leadGap) * 0.06);
+        if (gap > 800) this.goAway();
+        break;
+    }
+    if (speed < 1) lead.v = Math.max(lead.v, 0); // waiting at the start: don't roll backwards
+    lead.s += lead.v * dt;
+    lead.s = Math.max(lead.s, pos + 60);
+  }
+
+  private place(c: Car, pos: number, origin: THREE.Vector3) {
+    c.lamps.visible = Math.abs(c.s - pos) < LAMP_BOX_DIST;
     const f = this.track.frame(c.s, this.frame);
     this.track.point(c.s, c.L, 0, this.tmp).sub(origin);
     c.obj.position.copy(this.tmp);
