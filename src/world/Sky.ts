@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { ScenePreset } from '../scenes/types';
 import { galaxyTexture } from '../util/textures';
+import { getGlowScale } from '../util/materials';
 
 const R = 4500;
 const ORIGIN = new THREE.Vector3();
@@ -26,6 +27,8 @@ export class Sky {
     /** 0..1 night mode (DIM switch) */
     uDim: { value: 0 },
     uTime: { value: 0 },
+    /** angular size of one screen pixel (radians) */
+    uPixAng: { value: 0.001 },
   };
   private galaxy: THREE.Mesh;
   private m4 = new THREE.Matrix4();
@@ -46,7 +49,7 @@ export class Sky {
         }`,
       fragmentShader: /* glsl */`
         uniform vec3 uZenith, uMid, uHorizon, uGlow, uGlowDir;
-        uniform float uGlowStrength, uStarBright, uTime, uDim;
+        uniform float uGlowStrength, uStarBright, uTime, uDim, uPixAng;
         uniform mat3 uStarRot;
         varying vec3 vDir;
 
@@ -57,8 +60,10 @@ export class Sky {
         }
         vec3 starLayer(vec3 d, float scale, float density) {
           vec3 p = d * scale;
-          // one screen pixel in cell units (outside the loop: derivatives need uniform flow)
-          float pxu = max(length(fwidth(p)) * 0.5, 1e-6);
+          // one screen pixel in cell units. Computed from the pixel's angular size, not
+          // fwidth(): on Safari (Metal) derivatives are wrong along the dome's triangle
+          // edges, which made the sphere's tessellation show up as squares.
+          float pxu = max(scale * uPixAng * 0.85, 1e-6);
           vec3 cell = floor(p);
           vec3 acc = vec3(0.0);
           // Stars are soft gaussians at least ~1 px wide, so they glide across the pixel
@@ -150,6 +155,7 @@ export class Sky {
     this.drift += this.p.sky.starDrift * dt;
     const u = this.uniforms;
     u.uTime.value = t;
+    u.uPixAng.value = 1 / Math.max(1, getGlowScale());
     u.uGlowDir.value.copy(roadDir).setY(0).normalize();
     this.m4.makeRotationY(skyYaw).multiply(ROT_X.makeRotationX(this.drift));
     u.uStarRot.value.setFromMatrix4(this.m4);
