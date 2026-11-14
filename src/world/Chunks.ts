@@ -237,9 +237,19 @@ function roadMaterial(p: ScenePreset) {
       float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       void main() {
         float L = vRoad.x, s = vRoad.y;
+        // lamp light pools along the road (gaussian, sigma^2 = 55 m^2), pre-filtered over the
+        // pixel footprint: far away one pixel spans more road than a pool, and point-sampling
+        // made the distant road blink as pixels hit or missed the pools while driving.
+        // Widen each gaussian by the footprint (same total light) and sum the neighbours.
         float ph = mod(s, uSpacing);
-        float ds = min(ph, uSpacing - ph);
-        float along = exp(-ds * ds / 110.0);
+        float fs = min(fwidth(s), 2.0 * uSpacing);
+        float v = 55.0 + fs * fs / 12.0;
+        float along = 0.0;
+        for (int i = -2; i <= 2; i++) {
+          float d = ph - float(i) * uSpacing;
+          along += exp(-d * d / (2.0 * v));
+        }
+        along *= sqrt(55.0 / v);
         float lat = exp(-pow(L - uHeadL, 2.0) / 28.0) + exp(-pow(L + uHeadL, 2.0) / 28.0);
         float pool = along * (0.3 + lat) * uLamps;
         vec2 gp = vec2(L * 14.0, s * 14.0);
@@ -257,6 +267,8 @@ function roadMaterial(p: ScenePreset) {
   });
 }
 
+const named = <T extends THREE.Object3D>(o: T, name: string) => { o.name = name; return o; };
+
 /* ------------------------------------------------------------------ */
 interface Chunk {
   index: number;
@@ -267,6 +279,8 @@ interface Chunk {
 
 export class ChunkManager {
   readonly root = new THREE.Group();
+  /** debug: chunk parts to hide by name (road, markings, heads, lampglow, poles, cones, reflections, terrain) */
+  readonly hidden = new Set<string>();
   private chunks = new Map<number, Chunk>();
   private mats!: {
     road: THREE.ShaderMaterial;
@@ -367,7 +381,7 @@ export class ChunkManager {
     }
     for (let i = 0; i < CHUNK_LEN / DS; i++) road.quad(i * 2, i * 2 + 1, i * 2 + 3, i * 2 + 2);
     // seam: s values of the last row must continue smoothly (mod) – fine since spacing divides the modulus
-    group.add(new THREE.Mesh(road.geometry('aRoad'), this.mats.road));
+    group.add(named(new THREE.Mesh(road.geometry('aRoad'), this.mats.road), 'road'));
 
     /* ---------- neon markings ---------- */
     const neon = new Builder();
@@ -485,30 +499,31 @@ export class ChunkManager {
       const pts = new THREE.Points(new THREE.BufferGeometry().setFromPoints(glowPts), this.mats.glow);
       pts.renderOrder = 3;
       pts.frustumCulled = false;
-      group.add(pts);
+      group.add(named(pts, 'lampglow'));
     }
     if (!neon.empty) neonParts.push(neon.geometry().toNonIndexed());
     if (neonParts.length) {
       const m = new THREE.Mesh(mergeGeometries(neonParts), this.mats.marking);
       m.renderOrder = 1;
-      group.add(m);
+      group.add(named(m, 'markings'));
     }
-    if (headParts.length) group.add(new THREE.Mesh(mergeGeometries(headParts), this.mats.lampHead));
-    if (dark.length) group.add(new THREE.Mesh(mergeGeometries(dark), this.mats.dark));
+    if (headParts.length) group.add(named(new THREE.Mesh(mergeGeometries(headParts), this.mats.lampHead), 'heads'));
+    if (dark.length) group.add(named(new THREE.Mesh(mergeGeometries(dark), this.mats.dark), 'poles'));
     if (addParts.length) {
       const m = new THREE.Mesh(mergeGeometries(addParts), this.mats.add);
       m.renderOrder = 2;
-      group.add(m);
+      group.add(named(m, 'cones'));
     }
     if (reflParts.length) {
       const m = new THREE.Mesh(mergeGeometries(reflParts), this.mats.refl);
       m.renderOrder = 2;
-      group.add(m);
+      group.add(named(m, 'reflections'));
     }
 
     /* ---------- terrain ---------- */
     const terrain = this.buildTerrain(s0, s1, anchor);
-    group.add(terrain);
+    group.add(named(terrain, 'terrain'));
+    for (const o of group.children) o.visible = !this.hidden.has(o.name);
 
     this.root.add(group);
     return { index, anchor, group, terrain };

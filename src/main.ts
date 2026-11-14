@@ -65,12 +65,20 @@ curtain.visible = false;
 camera.add(curtain);
 scene.add(sky.group, skyEvents.group, mountains.group, chunks.root, traffic.group);
 
+// debug: ?hide=bloom,traffic,road,markings,... (see config.ts)
+for (const name of config.hide) chunks.hidden.add(name);
+if (config.hide.has('traffic')) traffic.group.visible = false;
+if (config.hide.has('sky')) sky.group.visible = false;
+if (config.hide.has('mountains')) mountains.group.visible = false;
+if (config.hide.has('cockpit')) cockpit.group.visible = false;
+
 const hemi = new THREE.HemisphereLight();
 const moon = new THREE.DirectionalLight();
 moon.position.set(-0.3, 0.8, -1);
 scene.add(hemi, moon);
 
 const post = new Post(renderer, scene, camera);
+if (config.hide.has('bloom')) post.bloom.enabled = false; // debug
 
 const player = new RadioPlayer();
 cockpit.radio.attach(player);
@@ -137,8 +145,7 @@ function update(dt: number) {
 
   // camera: driver's eye in the right lane, looking a bit ahead along the road
   const lateral = 1.75 + (0.18 * Math.sin(t * 0.21) + k * 150) * go;
-  const idle = Math.sin(t * 31) * 0.0012 * (1 - go); // engine idle shake while waiting
-  const bob = idle + (Math.sin(t * 9.1) * 0.004 + Math.sin(t * 2.3 + Math.sin(sim.pos * 0.05)) * 0.008) * go;
+  const bob = (Math.sin(t * 9.1) * 0.004 + Math.sin(t * 2.3 + Math.sin(sim.pos * 0.05)) * 0.008) * go;
   track.point(sim.pos, lateral, 1.2 + bob, v0);
   if (v0.distanceTo(origin) > 3000) origin.copy(v0).round();
   camera.position.subVectors(v0, origin);

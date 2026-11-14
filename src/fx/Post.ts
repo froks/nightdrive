@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { ScenePreset } from '../scenes/types';
+import { BloomPass } from './Bloom';
 
 /** VHS / CRT look: barrel, tracking wobble, glitch bands, chromatic aberration, scanlines, grain, vignette. */
 const VHSShader = {
@@ -48,14 +48,14 @@ const VHSShader = {
 
 export class Post {
   readonly composer: EffectComposer;
-  readonly bloom: UnrealBloomPass;
+  readonly bloom: BloomPass;
   readonly vhs: ShaderPass;
 
   constructor(private renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
     const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 1, 0.5, 0.85);
+    this.bloom = new BloomPass(1, 0.5, 0.85);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.vhs = new ShaderPass(VHSShader);

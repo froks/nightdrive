@@ -9,6 +9,8 @@
  *   ?autoplay      start the radio immediately (needs a browser autoplay permission)
  *   ?screensaver   exit (window.close) on user input, hide UI
  *   ?eggs=5        sky easter-egg frequency multiplier (0 = off)
+ *   ?hide=a,b      debug: hide parts - bloom, traffic, sky, mountains, cockpit, and road
+ *                  chunk parts: road, markings, heads, lampglow, poles, cones, reflections, terrain
  */
 const P = new URLSearchParams(location.search);
 const num = (v: string | null, d: number) => (v !== null && !Number.isNaN(parseFloat(v)) ? parseFloat(v) : d);
@@ -25,4 +27,6 @@ export const config = {
   screensaver: P.has('screensaver'),
   /** frequency multiplier for shooting stars, UFOs & co. */
   eggs: Math.max(0, num(P.get('eggs'), 1)),
+  /** debug: parts to hide */
+  hide: new Set((P.get('hide') ?? '').split(',').map(s => s.trim()).filter(Boolean)),
 };
