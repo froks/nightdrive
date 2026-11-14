@@ -179,6 +179,10 @@ export class RadioPlayer extends EventTarget {
   spectrum(out: Float32Array) {
     if (!this.analyser || !this.freq || this.status !== 'playing') { out.fill(0); return out; }
     this.analyser.getByteFrequencyData(this.freq);
+    // the analyser hears the signal after the element volume: undo that attenuation
+    // (byte data spans maxDecibels - minDecibels) so the display doesn't shrink with volume
+    const vol = this.audio.volume;
+    const lift = vol > 0 ? (-20 * Math.log10(vol) * 255) / (this.analyser.maxDecibels - this.analyser.minDecibels) : 0;
     const n = this.freq.length, bands = out.length;
     const lo = 2, hi = n * 0.7;
     for (let b = 0; b < bands; b++) {
@@ -186,6 +190,7 @@ export class RadioPlayer extends EventTarget {
       const z = Math.max(a + 1, Math.floor(lo * Math.pow(hi / lo, (b + 1) / bands)));
       let m = 0;
       for (let i = a; i < z; i++) m = Math.max(m, this.freq[i]);
+      if (m > 0) m = Math.min(255, m + lift);
       // tilt towards the highs so the whole analyser moves with bass-heavy music
       out[b] = Math.min(1, Math.pow(m / 255, 1.6) * (0.9 + 0.9 * b / bands));
     }
@@ -217,9 +222,11 @@ export class RadioPlayer extends EventTarget {
   }
 
   private applyVolume() {
-    const v = this.muted ? 0 : this.volume * this.volume; // perceptual-ish curve
-    if (this.gain) this.gain.gain.value = v;
-    else this.audio.volume = v;
+    // Volume goes on the element, not the gain node: Safari can play a streamed
+    // element directly instead of through the WebAudio graph, where a gain would
+    // have no effect. Element volume works everywhere (also with the graph).
+    this.audio.volume = this.muted ? 0 : this.volume * this.volume; // perceptual-ish curve
+    if (this.gain) this.gain.gain.value = 1;
   }
 
   private ensureMeta() {
