@@ -1,6 +1,7 @@
 /**
  * URL parameters:
- *   ?q=0.75        render scale (performance; device pixel ratio is capped at 1.5, so ?q=1.34 = full 2x retina)
+ *   ?q=0.75        render scale (performance; device pixel ratio is capped at 1.5, so ?q=1.34 = full 2x retina);
+ *                  without it the render scale drops automatically while the frame rate is too low
  *   ?scene=dusk    start scene id (see scenes/presets.ts)
  *   ?fx=0          disable VHS post-processing
  *   ?glitch=0      disable random glitch bursts
@@ -22,6 +23,8 @@ const num = (v: string | null, d: number) => (v !== null && !Number.isNaN(parseF
 
 export const config = {
   quality: Math.min(2, Math.max(0.25, num(P.get('q'), 1))),
+  /** lower the render scale automatically when the device can't keep up (off with an explicit ?q) */
+  autoQuality: !P.has('q'),
   scene: P.get('scene') ?? 'night',
   fx: P.get('fx') !== '0',
   /** random VHS glitch bursts */

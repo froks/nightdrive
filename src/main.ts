@@ -217,14 +217,41 @@ function updateTransition(dt: number) {
   if (tr.t >= FADE_OUT + FADE_IN) { transition = null; curtain.visible = false; }
 }
 
+/* ---------- automatic render scale ---------- */
+/**
+ * Phones (and weak GPUs) can't fill a 1.5x HDR + MSAA + bloom buffer at full rate. Measure
+ * the frame rate in 2 s windows and step the render scale down while the median stays under
+ * 80% of the target (60 fps, or the ?fpscap). Only ever goes down, to at most half; the VHS
+ * pass hides the softer image well.
+ */
+let autoScale = 1;
+const AUTO_MIN = 0.5, AUTO_STEP = 0.8, AUTO_WINDOW = 2000, AUTO_SETTLE = 3000;
+const frameMs: number[] = [];
+let autoFrom = performance.now() + AUTO_SETTLE; // skip start-up (shader compiles, road build)
+function autoQuality(ts: number, intervalMs: number) {
+  if (!config.autoQuality || autoScale <= AUTO_MIN) return;
+  if (document.hidden || ts < autoFrom) { frameMs.length = 0; return; }
+  if (intervalMs > 0 && intervalMs < 500) frameMs.push(intervalMs);
+  if (ts - autoFrom < AUTO_WINDOW || frameMs.length < 10) return;
+  const median = frameMs.sort((a, b) => a - b)[frameMs.length >> 1];
+  frameMs.length = 0;
+  autoFrom = ts;
+  const target = config.fpsCap > 0 ? Math.min(60, config.fpsCap) : 60;
+  if (1000 / median >= 0.8 * target) return;
+  autoScale = Math.max(AUTO_MIN, autoScale * AUTO_STEP);
+  resize();
+  autoFrom = ts + 1000; // let the new size settle before measuring again
+  console.info(`[nightdrive] ${(1000 / median).toFixed(0)} fps: render scale -> ${autoScale.toFixed(2)}`);
+}
+
 /* ---------- sizing ---------- */
 const MAX_PIXEL_RATIO = 1.5;
 function resize() {
   const w = innerWidth, h = innerHeight;
   // at most 1.5x: with the VHS scanlines, grain and bloom a full 2x retina buffer is barely
   // distinguishable, but costs ~78% more pixels (and this renders into a 4x MSAA HDR target)
-  let pr = Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO) * config.quality;
-  const maxW = 2560 * config.quality;
+  let pr = Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO) * config.quality * autoScale;
+  const maxW = 2560 * config.quality * autoScale;
   if (w * pr > maxW) pr = maxW / w;
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h);
@@ -281,6 +308,7 @@ function loop(ts: number) {
   // motion uneven even at a steady frame rate. Clamped: 0 on the first frame / repeated
   // timestamps, at most maxDt after a stall or a background tab.
   const dt = lastTs < 0 ? 0 : Math.min(maxDt, Math.max(0, (ts - lastTs) / 1000));
+  if (lastTs >= 0) autoQuality(ts, ts - lastTs);
   lastTs = ts;
   update(sim.paused ? 0 : dt);
   cockpit.radio.update(ts / 1000, dt); // radio runs on wall-clock time, also while paused
