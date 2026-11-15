@@ -10,6 +10,7 @@
  *   ?screensaver   exit (window.close) on user input, hide UI
  *   ?stars=shader  old per-pixel star field in the sky shader (reference; slow)
  *   ?eggs=5        sky easter-egg frequency multiplier (0 = off)
+ *   ?fpscap=30     render at most N frames per second (saves CPU/battery; 30 by default with ?screensaver)
  *   ?fps           debug: frame rate / frame time overlay
  *   ?hide=a,b      debug: hide parts - bloom, traffic, sky, mountains, cockpit, and road
  *                  chunk parts: road, markings, heads, lampglow, poles, cones, reflections, terrain
@@ -31,6 +32,8 @@ export const config = {
   stars: P.get('stars') === 'shader' ? 'shader' : 'points',
   /** frequency multiplier for shooting stars, UFOs & co. */
   eggs: Math.max(0, num(P.get('eggs'), 1)),
+  /** frame rate cap, 0 = off (display refresh rate) */
+  fpsCap: Math.max(0, num(P.get('fpscap'), P.has('screensaver') ? 30 : 0)),
   /** debug: frame rate overlay */
   fps: P.has('fps'),
   /** debug: parts to hide */

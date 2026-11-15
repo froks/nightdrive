@@ -242,13 +242,24 @@ resize();
 const bufSize = new THREE.Vector2();
 const fpsMeter = config.fps ? new FpsMeter(() => { renderer.getDrawingBufferSize(bufSize); return [bufSize.x, bufSize.y]; }) : null;
 let lastTs = -1;
+/** optional frame cap (?fpscap=N, 30 in screensaver mode): rAF still fires every vsync, frames in between are skipped */
+const capInterval = config.fpsCap > 0 ? 1000 / config.fpsCap : 0;
+/** longest simulation step: covers a stall, and the capped frame interval if that is longer */
+const maxDt = Math.max(0.05, (1.5 * capInterval) / 1000);
+let nextFrame = -1;
 function loop(ts: number) {
+  if (capInterval > 0) {
+    // Running schedule rather than "at least N ms since the last frame": on e.g. a 144 Hz display
+    // capped at 60 the latter would only reach 48 fps. 1 ms slack for timestamp jitter.
+    if (nextFrame >= 0 && ts < nextFrame - 1) { requestAnimationFrame(loop); return; }
+    nextFrame = nextFrame < 0 || ts - nextFrame > capInterval ? ts + capInterval : nextFrame + capInterval;
+  }
   fpsMeter?.begin(ts);
   // Step by the rAF timestamp (the frame's vsync time), not performance.now() at callback
   // start: the latter jitters by a millisecond or two with main-thread load, which made the
   // motion uneven even at a steady frame rate. Clamped: 0 on the first frame / repeated
-  // timestamps, at most 50 ms after a stall or a background tab.
-  const dt = lastTs < 0 ? 0 : Math.min(0.05, Math.max(0, (ts - lastTs) / 1000));
+  // timestamps, at most maxDt after a stall or a background tab.
+  const dt = lastTs < 0 ? 0 : Math.min(maxDt, Math.max(0, (ts - lastTs) / 1000));
   lastTs = ts;
   update(sim.paused ? 0 : dt);
   cockpit.radio.update(ts / 1000, dt); // radio runs on wall-clock time, also while paused
