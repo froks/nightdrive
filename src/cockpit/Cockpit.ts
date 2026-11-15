@@ -5,6 +5,7 @@ import { clamp } from '../util/math';
 import { Radio } from './Radio';
 import { DASH_H, DASH_TEX_SCALE, DASH_W, dashBars, dashBarsMaterial, dashKey, drawDigitalDash } from './digitalDash';
 import { Windshield } from './Windshield';
+import { mergeStatic } from '../util/mergeStatic';
 
 export type PodSwitch = 'wipe' | 'wash' | 'info' | 'dim';
 const WIPER_REST = -0.04;
@@ -148,6 +149,7 @@ export class Cockpit {
             new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, fog: false }),
           );
           hit.position.set(0, y, 0.0465);
+          hit.visible = false; // click target only: raycasting ignores visibility, rendering skips it
           hit.userData.pod = name;
           pod.add(hit);
           this.podSwitches.set(name, { mesh: hit, flash: 0, on: false });
@@ -255,6 +257,13 @@ export class Cockpit {
     mk(0x6a8cff, 0.25, 2.6, [0.5, 0.3, -1.9]);     // street lamps
     mk(0xff6a2a, 0.35, 2.6, [1.4, 0.0, -1.9]);     // neon road edges, right
     mk(0xffa040, 0.08, 0.6, [-0.24, -0.4, -0.95]); // cluster spill
+
+    // one draw per material for everything that never moves (~100 meshes -> a few dozen draws);
+    // the rim keeps its own geometry: setPreset rewrites its vertex colours
+    mergeStatic(g, [this.wheelSpin, ...this.wipers, ...this.interactive, ...this.radio.animated, this.rimDash]);
+    // ... and within the parts that move as a whole (wheel rim highlight: vertex colours, see above)
+    mergeStatic(this.wheelSpin, [this.rimWheel]);
+    for (const w of this.wipers) mergeStatic(w, []);
 
     this.setPreset(preset);
   }

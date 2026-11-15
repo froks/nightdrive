@@ -125,8 +125,7 @@ export class Radio {
     const sideMat = new THREE.MeshStandardMaterial({ color: 0x15161c, roughness: 0.5, metalness: 0.3, fog: false });
     for (const b of BUTTONS) {
       const label = buttonLabel(b.label, b.w);
-      const mats = [sideMat, sideMat, sideMat, sideMat, new THREE.MeshBasicMaterial({ map: label, fog: false }), sideMat];
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.w, 0.028, 0.014), mats);
+      const mesh = new THREE.Mesh(twoGroupBox(b.w, 0.028, 0.014), [sideMat, new THREE.MeshBasicMaterial({ map: label, fog: false })]);
       const baseZ = FRONT + 0.006;
       mesh.position.set(b.x, ROW_Y, baseZ);
       mesh.userData.action = b.action;
@@ -192,6 +191,11 @@ export class Radio {
   }
 
   attach(player: RadioPlayer) { this.player = player; }
+
+  /** Parts that move (buttons, volume knob): kept out of static merging. */
+  get animated(): THREE.Object3D[] {
+    return [this.knob, ...[...this.buttons.values()].map(b => b.mesh)];
+  }
 
   /** Two-line message that overrides the info rows (e.g. the start prompt). */
   private prompt: [string, string] | null = null;
@@ -430,6 +434,23 @@ export class Radio {
 }
 
 /* ---------------- static textures ---------------- */
+
+/**
+ * Box whose front (+Z) face is material 1 and the other five faces material 0:
+ * two draw calls instead of BoxGeometry's six (one per face group).
+ */
+function twoGroupBox(w: number, h: number, d: number) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const idx = g.index!.array;
+  const front = g.groups[4]; // BoxGeometry face order: +x, -x, +y, -y, +z, -z
+  const sides: number[] = [], face: number[] = [];
+  for (let i = 0; i < idx.length; i++) (i >= front.start && i < front.start + front.count ? face : sides).push(idx[i]);
+  g.setIndex([...sides, ...face]);
+  g.clearGroups();
+  g.addGroup(0, sides.length, 0);
+  g.addGroup(sides.length, face.length, 1);
+  return g;
+}
 
 /**
  * Green dot-matrix LED display, drawn per pixel from the grid texture: unlit
