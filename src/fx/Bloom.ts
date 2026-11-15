@@ -113,6 +113,15 @@ export class BloomPass extends Pass {
   private hist: THREE.WebGLRenderTarget[] = [];
   private histIdx = 0;
   private histValid = false;
+  /**
+   * Add the bloom onto the scene buffer at the end of render(). Off when a later
+   * pass samples `texture` itself (saves a full-resolution read/write).
+   */
+  composite = true;
+  /** the latest (temporally blended) bloom, half resolution */
+  get texture(): THREE.Texture { return this.hist[this.histIdx].texture; }
+  /** multiplier for `texture` when compositing it yourself */
+  get gain() { return this.strength * GAIN; }
 
   constructor(strength = 1, radius = 0.5, threshold = 0.85) {
     super();
@@ -192,9 +201,10 @@ export class BloomPass extends Pass {
     this.histValid = true;
 
     // add onto the scene
+    if (!this.composite) { renderer.autoClear = auto; return; }
     this.quad.material = this.compMat;
     this.compMat.uniforms.tBloom.value = next.texture;
-    this.compMat.uniforms.uStrength.value = this.strength * GAIN;
+    this.compMat.uniforms.uStrength.value = this.gain;
     renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
     this.quad.render(renderer);
 
