@@ -192,11 +192,11 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
     if (ch === '.') { x.fillStyle = CYAN; x.fillRect(cx - 6, 404, 7, 7); continue; }
     seg7(x, cx, 360, 32, 52, ch, CYAN, 0.75); cx += 40;
   }
-  // gear
+  // gear (right of the 6-digit odometer, which ends at ~486)
   x.strokeStyle = LINE; x.lineWidth = 2.5;
-  x.strokeRect(470, 296, 58, 74);
+  x.strokeRect(500, 296, 58, 74);
   x.font = font(56, '800'); x.fillStyle = YELLOW;
-  x.fillText('D', 480, 356);
+  x.fillText('D', 510, 356);
 
   /* ---------------- right of speed: boost / economy bar ---------------- */
   x.font = font(18, '600'); x.fillStyle = LABEL;
