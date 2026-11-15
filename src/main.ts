@@ -241,21 +241,23 @@ resize();
 /* ---------- loop ---------- */
 const bufSize = new THREE.Vector2();
 const fpsMeter = config.fps ? new FpsMeter(() => { renderer.getDrawingBufferSize(bufSize); return [bufSize.x, bufSize.y]; }) : null;
-let last = performance.now();
+let lastTs = -1;
 function loop(ts: number) {
   fpsMeter?.begin(ts);
-  // rAF timestamps can lag performance.now() (first frame, virtual time) -> clamp both ways
-  const now = performance.now();
-  const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
-  last = now;
+  // Step by the rAF timestamp (the frame's vsync time), not performance.now() at callback
+  // start: the latter jitters by a millisecond or two with main-thread load, which made the
+  // motion uneven even at a steady frame rate. Clamped: 0 on the first frame / repeated
+  // timestamps, at most 50 ms after a stall or a background tab.
+  const dt = lastTs < 0 ? 0 : Math.min(0.05, Math.max(0, (ts - lastTs) / 1000));
+  lastTs = ts;
   update(sim.paused ? 0 : dt);
-  cockpit.radio.update(now / 1000, dt); // radio runs on wall-clock time, also while paused
+  cockpit.radio.update(ts / 1000, dt); // radio runs on wall-clock time, also while paused
   cockpit.updateWeather(dt, sim.speed);
   rain.update(dt, cockpit.rain, sim.speed, scene.fog as THREE.FogExp2 | null);
   if (scene.fog) (scene.fog as THREE.FogExp2).density = preset.fog.density * (1 + 0.7 * cockpit.rain);
   updateTransition(dt);
   updateDim(dt);
-  post.render(sim.t, sim.glitch, fx);
+  post.render(sim.t, sim.glitch, fx, dt);
   fpsMeter?.end();
   requestAnimationFrame(loop);
 }

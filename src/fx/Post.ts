@@ -128,8 +128,9 @@ export class Post {
     this.final.uniforms.uRes.value.set(w * pr, h * pr);
   }
 
-  render(t: number, glitch: number, fx: boolean) {
+  /** @param dt frame time (s), for the bloom's temporal blend */
+  render(t: number, glitch: number, fx: boolean, dt: number) {
     this.final.uniforms.uParams.value.set(t % 1000, glitch, fx ? 1 : 0, 0);
-    this.composer.render();
+    this.composer.render(dt);
   }
 }
