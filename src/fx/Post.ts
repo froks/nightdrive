@@ -4,6 +4,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import type { ScenePreset } from '../scenes/types';
 import { BloomPass } from './Bloom';
+import { config } from '../config';
 
 /**
  * Final pass: bloom composite + tone mapping + sRGB + VHS / CRT look (barrel,
@@ -105,7 +106,7 @@ export class Post {
   private final: FinalPass;
 
   constructor(private renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
-    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: config.msaa });
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
     this.bloom = new BloomPass(1, 0.5, 0.85);
