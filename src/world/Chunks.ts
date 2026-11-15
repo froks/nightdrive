@@ -5,7 +5,8 @@ import type { HDR, ScenePreset } from '../scenes/types';
 import { additiveMaterial, colorize, getGlowScale, glowPointsMaterial, stripAttrs, trackGlowScale } from '../util/materials';
 import { fbm, ridged, smoothstep } from '../util/math';
 
-export const CHUNK_LEN = 60;
+/** chunk length (m): each chunk is ~8 draw calls, so fewer, longer chunks are cheaper to render */
+export const CHUNK_LEN = 120;
 export const VIEW_DIST = 1100;
 
 export const ROAD = {
