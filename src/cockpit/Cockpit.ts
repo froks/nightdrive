@@ -3,7 +3,7 @@ import type { HDR, ScenePreset } from '../scenes/types';
 import { liveCanvas } from '../util/textures';
 import { clamp } from '../util/math';
 import { Radio } from './Radio';
-import { DASH_H, DASH_TEX_SCALE, DASH_W, dashKey, drawDigitalDash } from './digitalDash';
+import { DASH_H, DASH_TEX_SCALE, DASH_W, dashBars, dashBarsMaterial, dashKey, drawDigitalDash } from './digitalDash';
 import { Windshield } from './Windshield';
 
 export type PodSwitch = 'wipe' | 'wash' | 'info' | 'dim';
@@ -30,6 +30,8 @@ export class Cockpit {
   private cluster = liveCanvas(Math.round(DASH_W * DASH_TEX_SCALE), Math.round(DASH_H * DASH_TEX_SCALE));
   private lastDraw = -1;
   private dashShown = '';
+  /** lit tach / boost segments over the dash canvas (updated every frame) */
+  private bars = dashBarsMaterial();
   private rimMat: THREE.MeshBasicMaterial;
   private rimDash!: THREE.Mesh;
   private rimWheel!: THREE.Mesh;
@@ -182,6 +184,9 @@ export class Cockpit {
     /* instrument cluster (live canvas) */
     const clusterMat = new THREE.MeshBasicMaterial({ map: this.cluster.tex, fog: false, color: new THREE.Color(1.0, 1.0, 1.0) });
     const cl = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6 * DASH_H / DASH_W), clusterMat);
+    const bars = new THREE.Mesh(cl.geometry, this.bars);
+    bars.position.z = 0.0004; // just in front of the canvas, behind the smoked glass
+    cl.add(bars);
     cl.position.set(CX, hy - 0.006 - 0.1, FZ + 0.003);
     g.add(cl);
     // smoked glass over the cluster
@@ -332,6 +337,7 @@ export class Cockpit {
     const k = 1 - DASH_DIM * d;
     for (const { m, base } of this.dimMats) m.color.copy(base).multiplyScalar(k);
     this.radio.brightness = k;
+    this.bars.uniforms.uBright.value = k;
     this.applyLights();
   }
 
@@ -351,6 +357,9 @@ export class Cockpit {
         pc.tex.needsUpdate = true;
       }
     }
+    const b = dashBars(s);
+    this.bars.uniforms.uTach.value = b.tach;
+    this.bars.uniforms.uBoost.value = b.boost;
     // a real digital dash updates slower than this; redraw + upload only when something visible changed
     if (s.t - this.lastDraw >= 1 / 20) {
       const key = dashKey(s);

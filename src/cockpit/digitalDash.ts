@@ -1,10 +1,13 @@
+import * as THREE from 'three';
 import type { DriveState } from './Cockpit';
 
 /**
  * 80s "digital dash" instrument cluster (Z31-era inspiration):
  * rising wedge bar-graph tachometer, slanted 7-segment speedometer,
  * vertical bar graphs, 7-seg odometer/trip, warning-lamp strip.
- * Drawn on a 1536×512 canvas.
+ * Drawn on a 1536×512 canvas; the fast-moving tach and boost bars are drawn
+ * lit by a shader overlay (dashBarsMaterial), so the canvas only changes when a
+ * digit or a slow bar graph does.
  */
 export const DASH_W = 1536, DASH_H = 512;
 /**
@@ -24,12 +27,85 @@ const LABEL = 'rgba(150,200,255,0.85)';
 
 const SKEW = 0.12; // italic slant of the digital graphics
 
-/** Everything the dash displays, quantised to what's visible. */
-function dashValues(s: DriveState) {
-  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+/* Bar geometry in layout px, shared by the canvas (unlit ghost segments) and the shader (lit ones). */
+/** tach: SEG slanted segments from X0 to X1 standing on BASE, height rising with the index */
+const TACH = { SEG: 48, X0: 176, X1: 1360, BASE: 216, GAP: 7 };
+const tachH = (i: number) => 34 + 150 * Math.pow(i / (TACH.SEG - 1), 1.25);
+/** boost: N slanted segments, W wide every PITCH px, between Y and Y + H */
+const BOOST = { N: 12, X: 1096, PITCH: 21, W: 15, Y: 312, H: 30 };
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+/** Fast-moving bars (shader overlay): lit tach segments (fractional) and lit boost segments. */
+export function dashBars(s: DriveState) {
   return {
-    /** lit tach segments; the last one is drawn partially (alpha), so keep a tenth */
-    lit: Math.round(clamp01(s.rpm) * 48 * 10) / 10,
+    tach: clamp01(s.rpm) * TACH.SEG,
+    boost: Math.ceil(clamp01((s.rpm - 0.45) * 1.6 + 0.1 * Math.sin(s.t * 3)) * BOOST.N),
+  };
+}
+
+/**
+ * Lit tach + boost segments, drawn over the dash plane every frame (the canvas
+ * has their unlit ghosts). Same parallelograms as the canvas, antialiased.
+ */
+export function dashBarsMaterial() {
+  const lin = (hex: string) => new THREE.Color(hex); // sRGB -> linear, like the canvas texture
+  const f = (v: number) => v.toFixed(4);
+  const segW = (TACH.X1 - TACH.X0) / TACH.SEG;
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTach: { value: 0 }, uBoost: { value: 0 }, uBright: { value: 1 },
+      uCyan: { value: lin(CYAN) }, uYellow: { value: lin(YELLOW) }, uRed: { value: lin(RED) }, uOrange: { value: lin(ORANGE) },
+    },
+    transparent: true,
+    depthWrite: false,
+    fog: false,
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */`
+      uniform float uTach, uBoost, uBright;
+      uniform vec3 uCyan, uYellow, uRed, uOrange;
+      varying vec2 vUv;
+      // antialiased coverage of a signed distance d (layout px) with fw layout px per screen px
+      float cover(float d, float fw) { return clamp(d / fw + 0.5, 0.0, 1.0); }
+      void main() {
+        vec2 p = vec2(vUv.x * ${f(DASH_W)}, (1.0 - vUv.y) * ${f(DASH_H)});
+        vec2 fw = max(fwidth(p), vec2(1e-3));
+        vec4 col = vec4(0.0);
+        // tach: segment i spans [X0 + i*segW, +segW-GAP] at the base, sheared by the italic skew
+        {
+          float hy = ${f(TACH.BASE)} - p.y;
+          float xs = p.x - hy * ${f(SKEW)};
+          float i = floor((xs - ${f(TACH.X0)}) / ${f(segW)});
+          if (i >= 0.0 && i < ${f(TACH.SEG)} && i < uTach) {
+            float local = xs - ${f(TACH.X0)} - i * ${f(segW)};
+            float h = 34.0 + 150.0 * pow(i / ${f(TACH.SEG - 1)}, 1.25);
+            float a = cover(min(local, ${f(segW - TACH.GAP)} - local), fw.x) * cover(min(hy, h - hy), fw.y);
+            if (i + 1.0 > uTach) a *= 0.4 + 0.6 * (uTach - i); // partially lit last segment
+            col = vec4(i >= 40.0 ? uRed : i >= 32.0 ? uYellow : uCyan, a);
+          }
+        }
+        // boost
+        {
+          float hy = ${f(BOOST.Y + BOOST.H)} - p.y;
+          float xs = p.x - hy * ${f(SKEW)};
+          float i = floor((xs - ${f(BOOST.X)}) / ${f(BOOST.PITCH)});
+          if (i >= 0.0 && i < uBoost) {
+            float local = xs - ${f(BOOST.X)} - i * ${f(BOOST.PITCH)};
+            float a = cover(min(local, ${f(BOOST.W)} - local), fw.x) * cover(min(hy, ${f(BOOST.H)} - hy), fw.y);
+            if (a > col.a) col = vec4(i > 8.0 ? uOrange : uCyan, a);
+          }
+        }
+        if (col.a <= 0.0) discard;
+        gl_FragColor = vec4(col.rgb * uBright, col.a);
+      }`,
+  });
+}
+
+/** Everything the canvas displays, quantised to what's visible (tach + boost: see dashBars). */
+function dashValues(s: DriveState) {
+  return {
     speed: Math.round(s.speedKmh),
     fuel: Math.round(clamp01(0.62 - (s.odoKm % 400) / 900) * 12),
     temp: Math.round(clamp01(0.55 + 0.03 * Math.sin(s.t * 0.1)) * 12),
@@ -37,7 +113,6 @@ function dashValues(s: DriveState) {
     volt: Math.round(clamp01(0.7 + 0.02 * Math.sin(s.t * 1.7)) * 12),
     odo: Math.floor(42817 + s.odoKm),
     trip: (s.odoKm % 1000).toFixed(1),
-    boost: Math.ceil(clamp01((s.rpm - 0.45) * 1.6 + 0.1 * Math.sin(s.t * 3)) * 12),
   };
 }
 
@@ -70,22 +145,18 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   x.stroke();
 
   /* ---------------- tachometer: rising wedge bar graph ---------------- */
-  const SEG = 48, X0 = 176, X1 = 1360, BASE = 216;
+  // unlit ghost segments only: the lit ones are drawn by dashBarsMaterial
+  const { SEG, X0, X1, BASE, GAP } = TACH;
   const segW = (X1 - X0) / SEG;
-  const lit = v.lit;
+  x.fillStyle = TEAL_DIM;
   for (let i = 0; i < SEG; i++) {
-    const h = 34 + 150 * Math.pow(i / (SEG - 1), 1.25);
+    const h = tachH(i);
     const xx = X0 + i * segW;
-    const on = i < lit;
-    const col = i >= 40 ? RED : i >= 32 ? YELLOW : CYAN;
-    x.fillStyle = on ? col : TEAL_DIM;
-    if (on && i + 1 > lit) x.globalAlpha = 0.4 + 0.6 * (lit - i);
     // slanted parallelogram segment
     x.beginPath();
-    x.moveTo(xx, BASE); x.lineTo(xx + segW - 7, BASE);
-    x.lineTo(xx + segW - 7 + h * SKEW, BASE - h); x.lineTo(xx + h * SKEW, BASE - h);
+    x.moveTo(xx, BASE); x.lineTo(xx + segW - GAP, BASE);
+    x.lineTo(xx + segW - GAP + h * SKEW, BASE - h); x.lineTo(xx + h * SKEW, BASE - h);
     x.closePath(); x.fill();
-    x.globalAlpha = 1;
   }
   // redline marker + scale
   x.fillStyle = RED; x.fillRect(X0 + 40 * segW, BASE + 6, 8 * segW - 7, 4);
@@ -130,12 +201,12 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   /* ---------------- right of speed: boost / economy bar ---------------- */
   x.font = font(18, '600'); x.fillStyle = LABEL;
   x.fillText('BOOST', 1096, 300);
-  for (let i = 0; i < 12; i++) {
-    const on = i < v.boost;
-    x.fillStyle = on ? (i > 8 ? ORANGE : CYAN) : TEAL_DIM;
+  // unlit ghosts only (lit: dashBarsMaterial)
+  x.fillStyle = TEAL_DIM;
+  for (let i = 0; i < BOOST.N; i++) {
     x.beginPath();
-    const bx = 1096 + i * 21, by = 312, bh = 30;
-    x.moveTo(bx, by + bh); x.lineTo(bx + 15, by + bh); x.lineTo(bx + 15 + bh * SKEW, by); x.lineTo(bx + bh * SKEW, by);
+    const bx = BOOST.X + i * BOOST.PITCH, by = BOOST.Y, bh = BOOST.H, bw = BOOST.W;
+    x.moveTo(bx, by + bh); x.lineTo(bx + bw, by + bh); x.lineTo(bx + bw + bh * SKEW, by); x.lineTo(bx + bh * SKEW, by);
     x.fill();
   }
   // outside temp + clock style readout
