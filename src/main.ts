@@ -16,6 +16,7 @@ import { rand, smoothstep } from './util/math';
 import { setGlowViewport } from './util/materials';
 import { RadioPlayer, type RadioAction } from './audio/RadioPlayer';
 import { initRadioInput } from './input/radioInput';
+import { FpsMeter } from './dev/FpsMeter';
 
 /* ---------- renderer / scene ---------- */
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -235,8 +236,11 @@ addEventListener('resize', resize);
 resize();
 
 /* ---------- loop ---------- */
+const bufSize = new THREE.Vector2();
+const fpsMeter = config.fps ? new FpsMeter(() => { renderer.getDrawingBufferSize(bufSize); return [bufSize.x, bufSize.y]; }) : null;
 let last = performance.now();
-function loop() {
+function loop(ts: number) {
+  fpsMeter?.begin(ts);
   // rAF timestamps can lag performance.now() (first frame, virtual time) -> clamp both ways
   const now = performance.now();
   const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
@@ -249,6 +253,7 @@ function loop() {
   updateTransition(dt);
   updateDim(dt);
   post.render(sim.t, sim.glitch, fx);
+  fpsMeter?.end();
   requestAnimationFrame(loop);
 }
 
