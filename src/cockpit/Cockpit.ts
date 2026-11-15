@@ -191,8 +191,9 @@ export class Cockpit {
     cl.add(bars);
     cl.position.set(CX, hy - 0.006 - 0.1, FZ + 0.003);
     g.add(cl);
-    // smoked glass over the cluster
-    const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.22), new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.05, metalness: 1, transparent: true, opacity: 0.22, fog: false }));
+    // smoked glass over the cluster; not mirror-smooth: at low roughness the cluster-spill
+    // light (right in front of it) reflects as a one-pixel orange dot in the tach
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.22), new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.35, metalness: 1, transparent: true, opacity: 0.22, fog: false }));
     glass.position.set(CX, hy - 0.115, FZ + 0.014);
     glass.rotation.x = -0.12;
     g.add(glass);
