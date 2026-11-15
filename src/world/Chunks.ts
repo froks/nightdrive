@@ -110,6 +110,7 @@ function markingMaterial() {
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
+    forceSinglePass: true, // additive: no back/front two-pass render needed (see additiveMaterial)
     vertexShader: /* glsl */`
       attribute vec3 color;
       attribute vec4 aLod;
@@ -162,6 +163,7 @@ function reflectionMaterial() {
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
+    forceSinglePass: true, // additive: no back/front two-pass render needed (see additiveMaterial)
     vertexShader: /* glsl */`
       attribute vec3 color;
       varying vec3 vColor;

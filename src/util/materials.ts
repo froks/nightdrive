@@ -31,6 +31,9 @@ export function additiveMaterial() {
   const m = new THREE.MeshBasicMaterial({
     vertexColors: true, side: THREE.DoubleSide, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false,
+    // additive, so draw order doesn't matter: skip three's two-pass (back, then front) render of
+    // transparent double-sided materials, which also re-resolves the shader program every draw
+    forceSinglePass: true,
   });
   fadeFog(m, 1.0, 'fade');
   return m;
