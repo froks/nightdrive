@@ -232,8 +232,26 @@ function resize() {
   camera.aspect = w / h;
   // keep a sensible horizontal field on portrait screens
   camera.fov = w / h < 1 ? 70 : 52;
+  // portrait: the cluster and the radio don't fit side by side (see Cockpit.setLayout)
+  cockpit.setLayout(w / h < 1);
+  // short landscape screens (phones): zoom in on the dash, or its buttons end up tiny
+  const zoom = dashZoom(w, h);
+  if (zoom > 1) camera.setViewOffset(w * zoom, h * zoom, (w * zoom - w) / 2, h * zoom - h, w, h);
+  else camera.clearViewOffset();
   camera.updateProjectionMatrix();
-  setGlowViewport(h * pr, camera.fov);
+  setGlowViewport(h * pr * zoom, camera.fov);
+}
+/**
+ * Zoom towards the bottom centre for landscape screens under 560 px tall: the view is a
+ * crop of a larger frame anchored at its bottom edge, so the dash grows and the sky gets
+ * cropped at the top. Limited so the cluster and the radio (together ~1.45 × the screen
+ * height wide at vfov 52°) still fit across the width.
+ */
+function dashZoom(w: number, h: number) {
+  if (w / h < 1 || h >= 560) return 1;
+  const short = Math.min(1, (560 - h) / 160); // fades in between 560 and 400 px tall
+  const fit = w / (1.45 * h + 24);
+  return Math.max(1, Math.min(1 + 0.4 * short, fit));
 }
 addEventListener('resize', resize);
 resize();
@@ -279,6 +297,12 @@ function loop(ts: number) {
 /* ---------- UI / input ---------- */
 let fx = config.fx;
 const hint = document.getElementById('hint')!;
+/** phone / tablet: no keyboard, so the hint and the start prompt talk about tapping */
+const touch = matchMedia('(pointer: coarse)').matches;
+if (touch) {
+  hint.innerHTML = 'TAP TO START DRIVING<br>DASH: WIPE = rain · WASH = new scenery · INFO = station website · DIM = night mode'
+    + '<br>RADIO: tap the buttons · drag the VOL knob · ▲ TAPE = your own music<br>double-tap = fullscreen';
+}
 
 if (config.screensaver) {
   hint.remove();
@@ -309,6 +333,16 @@ if (config.screensaver) {
   };
   const radioUi = initRadioInput({ player, cockpit, camera, fxEnabled: () => fx, onWash: () => changeScene(), onDim: toggleDim });
   addEventListener('dblclick', e => { if (!radioUi.isOverRadio(e)) toggleFs(); });
+  // touch: dblclick isn't reliable once page zoom is disabled, so detect the double tap here
+  let lastTap: { t: number; x: number; y: number } | null = null;
+  addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch' || radioUi.isOverRadio(e)) return;
+    const now = e.timeStamp;
+    if (lastTap && now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+      lastTap = null;
+      toggleFs();
+    } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+  });
   addEventListener('keydown', e => {
     switch (e.key.toLowerCase()) {
       case 'f': toggleFs(); break;
@@ -356,7 +390,7 @@ function startDriving() {
 }
 if (sim.started) setTimeout(() => hint.classList.add('hide'), 4500);
 else {
-  cockpit.radio.setPrompt(['PRESS ANY KEY', 'TO START DRIVING']);
+  cockpit.radio.setPrompt(touch ? ['TAP ANYWHERE', 'TO START DRIVING'] : ['PRESS ANY KEY', 'TO START DRIVING']);
   addEventListener('pointerdown', e => { if (e.button === 0) startDriving(); });
   addEventListener('keydown', startDriving);
 }

@@ -234,6 +234,25 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   x.textAlign = 'left';
 }
 
+/** Compact speed readout for the portrait layout (layout px; canvas scaled by SPEED_TEX_SCALE). */
+export const SPEED_W = 512, SPEED_H = 176, SPEED_TEX_SCALE = 1;
+export function drawSpeedReadout(x: CanvasRenderingContext2D, kmh: number) {
+  const W = SPEED_W, H = SPEED_H;
+  x.setTransform(SPEED_TEX_SCALE, 0, 0, SPEED_TEX_SCALE, 0, 0);
+  const bg = x.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#02040a'); bg.addColorStop(1, '#010205');
+  x.fillStyle = bg; x.fillRect(0, 0, W, H);
+  // frame lines, like the full cluster
+  x.strokeStyle = LINE; x.lineWidth = 3;
+  x.beginPath(); x.moveTo(10, 22); x.lineTo(26, 10); x.lineTo(W - 26, 10); x.lineTo(W - 10, 22); x.stroke();
+  x.beginPath(); x.moveTo(10, H - 22); x.lineTo(26, H - 10); x.lineTo(W - 26, H - 10); x.lineTo(W - 10, H - 22); x.stroke();
+  const spd = String(Math.round(kmh)).padStart(3, ' ');
+  for (let i = 0; i < 3; i++) seg7(x, 44 + i * 104, 30, 80, 116, spd[i], CYAN);
+  x.font = 'italic 700 30px "Eurostile", "Microgramma", "DejaVu Sans", "Arial Narrow", sans-serif';
+  x.fillStyle = LABEL;
+  x.fillText('km/h', 380, 144);
+}
+
 /* 7-segment digit with ghost segments. (x,y) = top-left, w×h cell. */
 const SEGMENTS: Record<string, string> = {
   '0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc',

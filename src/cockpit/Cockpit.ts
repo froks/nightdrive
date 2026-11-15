@@ -3,7 +3,7 @@ import type { HDR, ScenePreset } from '../scenes/types';
 import { liveCanvas } from '../util/textures';
 import { clamp } from '../util/math';
 import { Radio } from './Radio';
-import { DASH_H, DASH_TEX_SCALE, DASH_W, dashBars, dashBarsMaterial, dashKey, drawDigitalDash } from './digitalDash';
+import { DASH_H, DASH_TEX_SCALE, DASH_W, SPEED_H, SPEED_TEX_SCALE, SPEED_W, dashBars, dashBarsMaterial, dashKey, drawDigitalDash, drawSpeedReadout } from './digitalDash';
 import { Windshield } from './Windshield';
 import { mergeStatic } from '../util/mergeStatic';
 
@@ -11,6 +11,21 @@ export type PodSwitch = 'wipe' | 'wash' | 'info' | 'dim';
 const WIPER_REST = -0.04;
 /** how much DIM takes off the dashboard / head unit backlight */
 const DASH_DIM = 0.55;
+
+/**
+ * Portrait layout (narrow screens): the cluster doesn't fit next to the radio, so it is
+ * replaced by a compact speed readout, with the switch pod beside it, the radio centred
+ * below and the wheel lowered so its rim only frames the bottom edge.
+ * Position / rotation (camera space) and uniform scale per module.
+ */
+type Vec3 = [number, number, number];
+const PORTRAIT: Record<'speed' | 'podR' | 'radio' | 'wheel' | 'spill', { p: Vec3; r: Vec3; s: number }> = {
+  speed: { p: [-0.07, -0.375, -1.04], r: [-0.12, 0, 0], s: 1 },
+  podR: { p: [0.19, -0.38, -1.03], r: [-0.15, -0.12, 0], s: 1.15 },
+  radio: { p: [0, -0.59, -1.064], r: [-0.22, 0, 0], s: 0.9 },
+  wheel: { p: [0, -0.64, -0.6], r: [-0.33, 0, 0], s: 1 },
+  spill: { p: [0, -0.45, -0.95], r: [0, 0, 0], s: 1 },
+};
 
 export interface DriveState {
   t: number;
@@ -58,6 +73,17 @@ export class Cockpit {
   /** rain switched on (WIPE), and the smoothed 0..1 intensity */
   raining = false;
   rain = 0;
+
+  /* layout modules that move between the wide and the portrait layout (see setLayout) */
+  private clusterG = new THREE.Group();
+  private podR = new THREE.Group();
+  private wheelPivot = new THREE.Group();
+  private speedG = new THREE.Group();
+  private speedCanvas = liveCanvas(Math.round(SPEED_W * SPEED_TEX_SCALE), Math.round(SPEED_H * SPEED_TEX_SCALE));
+  private speedShown = -1;
+  private wideLayout = new Map<THREE.Object3D, { p: THREE.Vector3; r: THREE.Euler; s: THREE.Vector3 }>();
+  /** portrait layout: no instrument cluster, just a speed readout above the radio + switches */
+  portrait = false;
 
   /** Everything in the cockpit that reacts to clicks. */
   get interactive(): THREE.Object3D[] {
@@ -112,25 +138,27 @@ export class Cockpit {
     hood.lineTo(-0.35, 0);
     const hoodMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(hood, { depth: 0.36, bevelEnabled: false }), mat);
     hoodMesh.position.set(CX, hy, FZ - 0.3);
-    g.add(hoodMesh);
+    const cg = this.clusterG; // everything that belongs to the cluster (hidden in the portrait layout)
+    g.add(cg);
+    cg.add(hoodMesh);
     // dark inner face below the lip so the cluster sits in shadow
     const visor = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.075), new THREE.MeshBasicMaterial({ color: 0x010102, fog: false }));
     visor.position.set(CX, hy + 0.035, FZ + 0.0605);
-    g.add(visor);
+    cg.add(visor);
     // neon accent line along the visor lip
     const lip = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.0025, 0.003), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 0.85, 1.2), fog: false }));
     lip.position.set(CX, hy + 0.069, FZ + 0.062);
-    g.add(lip);
+    cg.add(lip);
     // binnacle side cheeks connecting hood to fascia
     for (const side of [-1, 1]) {
       const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.2, 0.065), mat);
       cheek.position.set(CX + side * 0.34, hy - 0.06, FZ + 0.03);
-      g.add(cheek);
+      cg.add(cheek);
     }
 
     /* satellite switch pods either side of the cluster */
     for (const side of [-1, 1]) {
-      const pod = new THREE.Group();
+      const pod = side > 0 ? this.podR : new THREE.Group();
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.13, 0.09), mat);
       pod.add(body);
       const pc = liveCanvas(136, 240);
@@ -157,7 +185,7 @@ export class Cockpit {
       }
       pod.position.set(CX + side * 0.39, hy - 0.08, FZ + 0.07);
       pod.rotation.set(-0.15, -side * 0.38, 0);
-      g.add(pod);
+      (side > 0 ? g : cg).add(pod);
     }
 
     /* windshield wipers, parked just below the dash line */
@@ -190,13 +218,30 @@ export class Cockpit {
     bars.position.z = 0.0004; // just in front of the canvas, behind the smoked glass
     cl.add(bars);
     cl.position.set(CX, hy - 0.006 - 0.1, FZ + 0.003);
-    g.add(cl);
+    cg.add(cl);
     // smoked glass over the cluster; not mirror-smooth: at low roughness the cluster-spill
     // light (right in front of it) reflects as a one-pixel orange dot in the tach
     const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.22), new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.35, metalness: 1, transparent: true, opacity: 0.22, fog: false }));
     glass.position.set(CX, hy - 0.115, FZ + 0.014);
     glass.rotation.x = -0.12;
-    g.add(glass);
+    cg.add(glass);
+
+    /* portrait layout: compact speed readout in a small hooded housing (see setLayout) */
+    {
+      const sg = this.speedG;
+      const SW = 0.3, SH = SW * SPEED_H / SPEED_W;
+      const housing = new THREE.Mesh(new THREE.BoxGeometry(SW + 0.03, SH + 0.03, 0.06), mat);
+      housing.position.z = -0.03;
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(SW, SH), new THREE.MeshBasicMaterial({ map: this.speedCanvas.tex, fog: false }));
+      face.position.z = 0.0005;
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(SW + 0.05, 0.012, 0.075), mat);
+      roof.position.set(0, SH / 2 + 0.021, 0.0075);
+      const neon = new THREE.Mesh(new THREE.BoxGeometry(SW + 0.05, 0.0025, 0.003), lip.material);
+      neon.position.set(0, SH / 2 + 0.015, 0.0455);
+      sg.add(housing, face, roof, neon);
+      sg.visible = false;
+      g.add(sg);
+    }
 
     /* radio */
     // centre-console radio, tilted up towards the driver
@@ -211,7 +256,7 @@ export class Cockpit {
     for (const x of [0.8, 1.05]) { const v = vent.clone(); v.position.set(x, -0.36, FZ + 0.01); g.add(v); }
 
     /* steering wheel */
-    const pivot = new THREE.Group();
+    const pivot = this.wheelPivot;
     pivot.position.set(-0.215, -0.3, -0.56);
     pivot.rotation.x = -0.33;
     pivot.add(this.wheelSpin);
@@ -261,12 +306,43 @@ export class Cockpit {
 
     // one draw per material for everything that never moves (~100 meshes -> a few dozen draws);
     // the rim keeps its own geometry: setPreset rewrites its vertex colours
-    mergeStatic(g, [this.wheelSpin, ...this.wipers, ...this.interactive, ...this.radio.animated, this.rimDash]);
+    // (the layout modules are merged within themselves, so they can still be moved as a whole)
+    const modules = [this.clusterG, this.podR, this.radio.group, this.speedG];
+    mergeStatic(g, [this.wheelPivot, ...this.wipers, ...modules, this.rimDash]);
+    for (const m of modules) mergeStatic(m, [...this.interactive, ...this.radio.animated]);
     // ... and within the parts that move as a whole (wheel rim highlight: vertex colours, see above)
     mergeStatic(this.wheelSpin, [this.rimWheel]);
+    for (const o of [this.speedG, this.podR, this.radio.group, this.wheelPivot, this.lights[3]]) {
+      this.wideLayout.set(o, { p: o.position.clone(), r: o.rotation.clone(), s: o.scale.clone() });
+    }
     for (const w of this.wipers) mergeStatic(w, []);
 
     this.setPreset(preset);
+  }
+
+  /** Switch between the wide layout (cluster left, radio right) and the portrait one (see PORTRAIT). */
+  setLayout(portrait: boolean) {
+    if (portrait === this.portrait) return;
+    this.portrait = portrait;
+    this.clusterG.visible = !portrait;
+    this.speedG.visible = portrait;
+    this.speedShown = -1;
+    const mods: [THREE.Object3D, (typeof PORTRAIT)['speed']][] = [
+      [this.speedG, PORTRAIT.speed], [this.podR, PORTRAIT.podR], [this.radio.group, PORTRAIT.radio],
+      [this.wheelPivot, PORTRAIT.wheel], [this.lights[3], PORTRAIT.spill],
+    ];
+    for (const [o, l] of mods) {
+      if (portrait) {
+        o.position.set(...l.p);
+        o.rotation.set(...l.r);
+        o.scale.setScalar(l.s);
+      } else {
+        const w = this.wideLayout.get(o)!;
+        o.position.copy(w.p);
+        o.rotation.copy(w.r);
+        o.scale.copy(w.s);
+      }
+    }
   }
 
   /** Rain, droplets and wipers (wall-clock time, also runs while paused). */
@@ -366,6 +442,17 @@ export class Cockpit {
         drawPod(pc.ctx, side, glow);
         pc.tex.needsUpdate = true;
       }
+    }
+    if (this.portrait) {
+      // the compact readout only shows the speed
+      const v = Math.round(s.speedKmh);
+      if (v !== this.speedShown && s.t - this.lastDraw >= 1 / 20) {
+        this.speedShown = v;
+        this.lastDraw = s.t;
+        drawSpeedReadout(this.speedCanvas.ctx, v);
+        this.speedCanvas.tex.needsUpdate = true;
+      }
+      return;
     }
     const b = dashBars(s);
     this.bars.uniforms.uTach.value = b.tach;

@@ -22,8 +22,18 @@ export function initRadioInput({ player, cockpit, camera, fxEnabled, onWash, onD
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
 
+  /** Ring of offsets (px) tried when a touch misses: fingers are less precise than a mouse. */
+  const TOUCH_SLOP = [[0, 0], ...Array.from({ length: 8 }, (_, i) => [Math.cos(i * Math.PI / 4) * 14, Math.sin(i * Math.PI / 4) * 14])];
   function pick(e: MouseEvent): THREE.Object3D | null {
-    let x = (e.clientX / innerWidth) * 2 - 1, y = -(e.clientY / innerHeight) * 2 + 1;
+    const offsets = (e as PointerEvent).pointerType === 'touch' ? TOUCH_SLOP : TOUCH_SLOP.slice(0, 1);
+    for (const [dx, dy] of offsets) {
+      const o = pickAt(e.clientX + dx, e.clientY + dy);
+      if (o) return o;
+    }
+    return null;
+  }
+  function pickAt(cx: number, cy: number): THREE.Object3D | null {
+    let x = (cx / innerWidth) * 2 - 1, y = -(cy / innerHeight) * 2 + 1;
     if (fxEnabled()) {
       // undo the VHS pass barrel distortion (u = p * (1 + 0.025 r²))
       const k = 1 + 0.025 * (x * x + y * y);
