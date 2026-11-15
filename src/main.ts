@@ -218,9 +218,12 @@ function updateTransition(dt: number) {
 }
 
 /* ---------- sizing ---------- */
+const MAX_PIXEL_RATIO = 1.5;
 function resize() {
   const w = innerWidth, h = innerHeight;
-  let pr = Math.min(devicePixelRatio || 1, 2) * config.quality;
+  // at most 1.5x: with the VHS scanlines, grain and bloom a full 2x retina buffer is barely
+  // distinguishable, but costs ~78% more pixels (and this renders into a 4x MSAA HDR target)
+  let pr = Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO) * config.quality;
   const maxW = 2560 * config.quality;
   if (w * pr > maxW) pr = maxW / w;
   renderer.setPixelRatio(pr);

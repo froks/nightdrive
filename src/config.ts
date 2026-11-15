@@ -1,6 +1,6 @@
 /**
  * URL parameters:
- *   ?q=0.75        render scale (performance)
+ *   ?q=0.75        render scale (performance; device pixel ratio is capped at 1.5, so ?q=1.34 = full 2x retina)
  *   ?scene=dusk    start scene id (see scenes/presets.ts)
  *   ?fx=0          disable VHS post-processing
  *   ?glitch=0      disable random glitch bursts
