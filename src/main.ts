@@ -240,7 +240,10 @@ resize();
 
 /* ---------- loop ---------- */
 const bufSize = new THREE.Vector2();
-const fpsMeter = config.fps ? new FpsMeter(() => { renderer.getDrawingBufferSize(bufSize); return [bufSize.x, bufSize.y]; }) : null;
+const fpsMeter = config.fps
+  ? new FpsMeter(() => { renderer.getDrawingBufferSize(bufSize); return [bufSize.x, bufSize.y]; },
+    renderer.getContext() as WebGL2RenderingContext, { cap: config.fpsCap, sync: config.fpsSync })
+  : null;
 let lastTs = -1;
 /** optional frame cap (?fpscap=N, 30 in screensaver mode): rAF still fires every vsync, frames in between are skipped */
 const capInterval = config.fpsCap > 0 ? 1000 / config.fpsCap : 0;
