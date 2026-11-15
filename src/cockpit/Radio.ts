@@ -52,6 +52,10 @@ export class Radio {
   private led = liveCanvas(COLS * DOT, ROWS * DOT);
   private ledBg: HTMLCanvasElement;
   private grid = new Uint8Array(COLS * ROWS);
+  /** last painted grid: skip repaint + texture upload when nothing changed */
+  private shownGrid = new Uint8Array(COLS * ROWS).fill(2);
+  /** what the cassette door shows (redrawn only when this changes) */
+  private doorKey = '';
   private door = liveCanvas(960, 352);
   private buttons = new Map<RadioAction, { mesh: THREE.Mesh; baseZ: number; until: number }>();
   private presetLeds: THREE.MeshBasicMaterial[] = [];
@@ -330,6 +334,11 @@ export class Radio {
   }
 
   private paint() {
+    // canvas redraw + texture upload are costly (in Firefox the pixels cross processes): skip if unchanged
+    let same = true;
+    for (let i = 0; i < this.grid.length; i++) if (this.grid[i] !== this.shownGrid[i]) { same = false; break; }
+    if (same) return;
+    this.shownGrid.set(this.grid);
     const { ctx: x, tex } = this.led;
     x.drawImage(this.ledBg, 0, 0);
     const [r, g, b] = LED_RGB;
@@ -374,6 +383,12 @@ export class Radio {
 
   private drawDoor() {
     const p = this.player!;
+    // redraw only when what it shows changes (static in radio mode; reels turn while a tape plays)
+    const key = p.mode === 'tape'
+      ? `tape|${p.track?.name ?? ''}|${Math.round(this.reel * 12)}|${Math.round(Math.min(1, p.position / 300) * 120)}`
+      : `radio|${p.tracks.length}`;
+    if (key === this.doorKey) return;
+    this.doorKey = key;
     const { ctx: x, canvas: c, tex } = this.door;
     const w = c.width, h = c.height;
     let gr = x.createLinearGradient(0, 0, 0, h);

@@ -3,7 +3,7 @@ import type { HDR, ScenePreset } from '../scenes/types';
 import { liveCanvas } from '../util/textures';
 import { clamp } from '../util/math';
 import { Radio } from './Radio';
-import { DASH_H, DASH_W, drawDigitalDash } from './digitalDash';
+import { DASH_H, DASH_TEX_SCALE, DASH_W, dashKey, drawDigitalDash } from './digitalDash';
 import { Windshield } from './Windshield';
 
 export type PodSwitch = 'wipe' | 'wash' | 'info' | 'dim';
@@ -27,8 +27,9 @@ export class Cockpit {
   readonly group = new THREE.Group();
   readonly radio: Radio;
   private wheelSpin = new THREE.Group();
-  private cluster = liveCanvas(DASH_W, DASH_H);
+  private cluster = liveCanvas(Math.round(DASH_W * DASH_TEX_SCALE), Math.round(DASH_H * DASH_TEX_SCALE));
   private lastDraw = -1;
+  private dashShown = '';
   private rimMat: THREE.MeshBasicMaterial;
   private rimDash!: THREE.Mesh;
   private rimWheel!: THREE.Mesh;
@@ -350,10 +351,15 @@ export class Cockpit {
         pc.tex.needsUpdate = true;
       }
     }
-    if (s.t - this.lastDraw >= 1 / 30) {
-      this.lastDraw = s.t;
-      drawDigitalDash(this.cluster.ctx, s);
-      this.cluster.tex.needsUpdate = true;
+    // a real digital dash updates slower than this; redraw + upload only when something visible changed
+    if (s.t - this.lastDraw >= 1 / 20) {
+      const key = dashKey(s);
+      if (key !== this.dashShown) {
+        this.dashShown = key;
+        this.lastDraw = s.t;
+        drawDigitalDash(this.cluster.ctx, s);
+        this.cluster.tex.needsUpdate = true;
+      }
     }
   }
 }

@@ -7,6 +7,12 @@ import type { DriveState } from './Cockpit';
  * Drawn on a 1536×512 canvas.
  */
 export const DASH_W = 1536, DASH_H = 512;
+/**
+ * Canvas resolution relative to the 1536×512 layout. The dash is re-uploaded whenever a
+ * reading changes (~20×/s), and in Firefox those pixels are copied between processes, so
+ * keep the texture near its on-screen size rather than 2× oversampled.
+ */
+export const DASH_TEX_SCALE = 2 / 3;
 
 const CYAN = '#38ffd8';
 const TEAL_DIM = 'rgba(56,255,216,0.08)';
@@ -18,9 +24,32 @@ const LABEL = 'rgba(150,200,255,0.85)';
 
 const SKEW = 0.12; // italic slant of the digital graphics
 
+/** Everything the dash displays, quantised to what's visible. */
+function dashValues(s: DriveState) {
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+  return {
+    /** lit tach segments; the last one is drawn partially (alpha), so keep a tenth */
+    lit: Math.round(clamp01(s.rpm) * 48 * 10) / 10,
+    speed: Math.round(s.speedKmh),
+    fuel: Math.round(clamp01(0.62 - (s.odoKm % 400) / 900) * 12),
+    temp: Math.round(clamp01(0.55 + 0.03 * Math.sin(s.t * 0.1)) * 12),
+    oil: Math.round(clamp01(0.45 + s.rpm * 0.35) * 12),
+    volt: Math.round(clamp01(0.7 + 0.02 * Math.sin(s.t * 1.7)) * 12),
+    odo: Math.floor(42817 + s.odoKm),
+    trip: (s.odoKm % 1000).toFixed(1),
+    boost: Math.ceil(clamp01((s.rpm - 0.45) * 1.6 + 0.1 * Math.sin(s.t * 3)) * 12),
+  };
+}
+
+/** Changes only when the dash would look different (skip the redraw + texture upload otherwise). */
+export function dashKey(s: DriveState) {
+  return Object.values(dashValues(s)).join('|');
+}
+
 export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   const W = DASH_W, H = DASH_H;
-  x.setTransform(1, 0, 0, 1, 0, 0);
+  const v = dashValues(s);
+  x.setTransform(DASH_TEX_SCALE, 0, 0, DASH_TEX_SCALE, 0, 0);
   // smoked-glass background with a faint perspective grid
   const bg = x.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, '#02040a'); bg.addColorStop(1, '#010205');
@@ -43,7 +72,7 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   /* ---------------- tachometer: rising wedge bar graph ---------------- */
   const SEG = 48, X0 = 176, X1 = 1360, BASE = 216;
   const segW = (X1 - X0) / SEG;
-  const lit = Math.max(0, Math.min(1, s.rpm)) * SEG;
+  const lit = v.lit;
   for (let i = 0; i < SEG; i++) {
     const h = 34 + 150 * Math.pow(i / (SEG - 1), 1.25);
     const xx = X0 + i * segW;
@@ -67,30 +96,26 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   x.fillText('x1000 r/min', X0 - 6, 40);
 
   /* ---------------- speed: big 7-segment digits ---------------- */
-  const spd = String(Math.round(s.speedKmh)).padStart(3, ' ');
+  const spd = String(v.speed).padStart(3, ' ');
   for (let i = 0; i < 3; i++) seg7(x, 580 + i * 124, 276, 100, 164, spd[i], CYAN);
   x.font = font(34); x.fillStyle = LABEL;
   x.fillText('km/h', 964, 436);
 
   /* ---------------- left: FUEL / TEMP vertical bar graphs ---------------- */
-  const fuel = 0.62 - (s.odoKm % 400) / 900;
-  const temp = 0.55 + 0.03 * Math.sin(s.t * 0.1);
-  vbar(x, 40, 70, 34, 330, 12, fuel, i => (i < 2 ? ORANGE : CYAN), 'F', 'E', 'FUEL');
-  vbar(x, 100, 70, 34, 330, 12, temp, i => (i > 9 ? RED : CYAN), 'H', 'C', 'TEMP');
+  vbar(x, 40, 70, 34, 330, 12, v.fuel, i => (i < 2 ? ORANGE : CYAN), 'F', 'E', 'FUEL');
+  vbar(x, 100, 70, 34, 330, 12, v.temp, i => (i > 9 ? RED : CYAN), 'H', 'C', 'TEMP');
 
   /* ---------------- right: OIL / VOLT ---------------- */
-  const oil = 0.45 + s.rpm * 0.35;
-  const volt = 0.7 + 0.02 * Math.sin(s.t * 1.7);
-  vbar(x, 1402, 70, 34, 330, 12, oil, () => CYAN, 'H', 'L', 'OIL');
-  vbar(x, 1462, 70, 34, 330, 12, volt, () => CYAN, '16', '8', 'VOLT');
+  vbar(x, 1402, 70, 34, 330, 12, v.oil, () => CYAN, 'H', 'L', 'OIL');
+  vbar(x, 1462, 70, 34, 330, 12, v.volt, () => CYAN, '16', '8', 'VOLT');
 
   /* ---------------- odometer / trip / gear ---------------- */
   x.font = font(18, '600'); x.fillStyle = LABEL;
   x.fillText('ODO', 196, 300);
   x.fillText('TRIP', 196, 380);
-  const odo = String(Math.floor(42817 + s.odoKm)).padStart(6, '0');
+  const odo = String(v.odo).padStart(6, '0');
   for (let i = 0; i < 6; i++) seg7(x, 250 + i * 40, 280, 32, 52, odo[i], CYAN, 0.75);
-  const trip = (s.odoKm % 1000).toFixed(1).padStart(5, ' ');
+  const trip = v.trip.padStart(5, ' ');
   let cx = 250;
   for (const ch of trip) {
     if (ch === '.') { x.fillStyle = CYAN; x.fillRect(cx - 6, 404, 7, 7); continue; }
@@ -105,9 +130,8 @@ export function drawDigitalDash(x: CanvasRenderingContext2D, s: DriveState) {
   /* ---------------- right of speed: boost / economy bar ---------------- */
   x.font = font(18, '600'); x.fillStyle = LABEL;
   x.fillText('BOOST', 1096, 300);
-  const boost = Math.max(0, Math.min(1, (s.rpm - 0.45) * 1.6 + 0.1 * Math.sin(s.t * 3)));
   for (let i = 0; i < 12; i++) {
-    const on = i < boost * 12;
+    const on = i < v.boost;
     x.fillStyle = on ? (i > 8 ? ORANGE : CYAN) : TEAL_DIM;
     x.beginPath();
     const bx = 1096 + i * 21, by = 312, bh = 30;
@@ -169,12 +193,12 @@ function seg7(x: CanvasRenderingContext2D, X: number, Y: number, w: number, h: n
   }
 }
 
-/* vertical segmented bar graph with end labels */
+/* vertical segmented bar graph with end labels; v = number of lit segments */
 function vbar(x: CanvasRenderingContext2D, X: number, Y: number, w: number, h: number, n: number, v: number,
   color: (i: number) => string, top: string, bottom: string, label: string) {
   const sh = h / n;
   for (let i = 0; i < n; i++) {
-    const on = i < Math.round(Math.max(0, Math.min(1, v)) * n);
+    const on = i < v; // v = lit segments
     x.fillStyle = on ? color(i) : TEAL_DIM;
     const yy = Y + h - (i + 1) * sh;
     x.beginPath();
