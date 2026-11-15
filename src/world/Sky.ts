@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import type { ScenePreset } from '../scenes/types';
 import { galaxyTexture } from '../util/textures';
 import { getGlowScale } from '../util/materials';
+import { config } from '../config';
+import { Stars } from './Stars';
 
 const R = 4500;
 const ORIGIN = new THREE.Vector3();
@@ -31,6 +33,8 @@ export class Sky {
     uPixAng: { value: 0.001 },
   };
   private galaxy: THREE.Mesh;
+  /** baked star point cloud (null with ?stars=shader: the old per-pixel star field) */
+  private stars: Stars | null = null;
   private m4 = new THREE.Matrix4();
   private drift = 0;
   private p!: ScenePreset;
@@ -41,6 +45,7 @@ export class Sky {
       side: THREE.BackSide,
       depthWrite: false,
       fog: false,
+      defines: config.stars === 'shader' ? { SHADER_STARS: '' } : {},
       vertexShader: /* glsl */`
         varying vec3 vDir;
         void main() {
@@ -53,6 +58,7 @@ export class Sky {
         uniform mat3 uStarRot;
         varying vec3 vDir;
 
+        #ifdef SHADER_STARS
         vec3 hash33(vec3 p) {
           p = fract(p * vec3(.1031, .1030, .0973));
           p += dot(p, p.yxz + 33.33);
@@ -92,6 +98,7 @@ export class Sky {
           }
           return acc;
         }
+        #endif
         void main() {
           vec3 d = normalize(vDir);
           float e = d.y;
@@ -101,9 +108,11 @@ export class Sky {
           float g = pow(max(dot(normalize(vec3(d.x, 0.0, d.z)), uGlowDir), 0.0), 10.0) * (1.0 - smoothstep(0.0, 0.3, abs(e)));
           col += uGlow * (g * 0.9 + band * 0.25) * uGlowStrength * (1.0 - 0.7 * uDim);
           col *= 1.0 - 0.55 * uDim;
+          #ifdef SHADER_STARS
           vec3 sd = uStarRot * d;
           vec3 st = starLayer(sd, 150.0, 0.10) + starLayer(sd, 320.0, 0.03) * 0.8 + starLayer(sd, 640.0, 0.012) * 0.6;
           col += st * smoothstep(-0.01, 0.12, e) * uStarBright * (1.0 - 0.75 * uDim);
+          #endif
           if (e < 0.0) col = mix(uHorizon, uHorizon * 0.4, smoothstep(0.0, 0.2, -e));
           gl_FragColor = vec4(col, 1.0);
         }`,
@@ -112,6 +121,10 @@ export class Sky {
     dome.renderOrder = -10;
     dome.frustumCulled = false;
     this.group.add(dome);
+    if (config.stars !== 'shader') {
+      this.stars = new Stars(R * 0.97, this.uniforms);
+      this.group.add(this.stars.points);
+    }
 
     this.galaxy = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -159,6 +172,11 @@ export class Sky {
     u.uGlowDir.value.copy(roadDir).setY(0).normalize();
     this.m4.makeRotationY(skyYaw).multiply(ROT_X.makeRotationX(this.drift));
     u.uStarRot.value.setFromMatrix4(this.m4);
+    if (this.stars) {
+      this.stars.update(u.uPixAng.value);
+      // uStarRot maps view directions into the star frame; the point cloud needs the inverse
+      this.stars.points.quaternion.setFromRotationMatrix(this.m4).invert();
+    }
 
     // galaxy: fixed in the (rotating) star frame, ~24° above the horizon, slightly left
     const yaw = skyYaw - 0.05, el = 0.36;

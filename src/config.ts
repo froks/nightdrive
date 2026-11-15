@@ -8,6 +8,7 @@
  *   ?rain          start with rain + wipers
  *   ?autoplay      start the radio immediately (needs a browser autoplay permission)
  *   ?screensaver   exit (window.close) on user input, hide UI
+ *   ?stars=shader  old per-pixel star field in the sky shader (reference; slow)
  *   ?eggs=5        sky easter-egg frequency multiplier (0 = off)
  *   ?hide=a,b      debug: hide parts - bloom, traffic, sky, mountains, cockpit, and road
  *                  chunk parts: road, markings, heads, lampglow, poles, cones, reflections, terrain
@@ -25,6 +26,8 @@ export const config = {
   autoplay: P.has('autoplay'),
   rain: P.has('rain'),
   screensaver: P.has('screensaver'),
+  /** star field: baked point cloud, or the old per-pixel search in the sky shader */
+  stars: P.get('stars') === 'shader' ? 'shader' : 'points',
   /** frequency multiplier for shooting stars, UFOs & co. */
   eggs: Math.max(0, num(P.get('eggs'), 1)),
   /** debug: parts to hide */
