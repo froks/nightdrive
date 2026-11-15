@@ -49,11 +49,12 @@ export class Radio {
   readonly interactive: THREE.Object3D[] = [];
   private player: RadioPlayer | null = null;
 
-  private led = liveCanvas(COLS * DOT, ROWS * DOT);
-  private ledBg: HTMLCanvasElement;
+  /** dot matrix state (1 = lit), row 0 at the top */
   private grid = new Uint8Array(COLS * ROWS);
-  /** last painted grid: skip repaint + texture upload when nothing changed */
-  private shownGrid = new Uint8Array(COLS * ROWS).fill(2);
+  /** the grid as a texture (0 / 255 per dot): the display is drawn by ledMaterial() from it */
+  private ledData = new Uint8Array(COLS * ROWS);
+  private ledTex = new THREE.DataTexture(this.ledData, COLS, ROWS, THREE.RedFormat, THREE.UnsignedByteType);
+  private ledMat = ledMaterial(this.ledTex);
   /** what the cassette door shows (redrawn only when this changes) */
   private doorKey = '';
   private door = liveCanvas(960, 352);
@@ -105,12 +106,11 @@ export class Radio {
     door.position.set(DOOR.x, DOOR.y, FRONT + 0.001);
     g.add(door);
 
-    /* LED matrix display: sharp texture, mipmapped */
-    this.ledBg = makeLedBackground();
-    this.led.tex.minFilter = THREE.LinearMipmapLinearFilter;
-    this.led.tex.generateMipmaps = true;
-    this.led.tex.anisotropy = 8;
-    const disp = new THREE.Mesh(new THREE.PlaneGeometry(DISP.w, DISP.h), new THREE.MeshBasicMaterial({ map: this.led.tex, fog: false, color: new THREE.Color(1.15, 1.15, 1.15) }));
+    /* LED matrix display: dots drawn by a shader from the grid texture (a canvas redraw +
+       ~1 MB upload per change was costly while the spectrum moves, especially in Firefox) */
+    this.ledTex.unpackAlignment = 1; // 98-byte rows
+    this.ledTex.needsUpdate = true;
+    const disp = new THREE.Mesh(new THREE.PlaneGeometry(DISP.w, DISP.h), this.ledMat);
     disp.position.set(DISP.x, DISP.y, FRONT + 0.001);
     g.add(disp);
     // glass over display/door: subtle reflective layer
@@ -234,6 +234,8 @@ export class Radio {
       m.color.multiplyScalar(this.brightness);
     }
 
+    this.ledMat.uniforms.uGain.value = 1.15 * this.brightness;
+
     if (p.status === 'playing' && p.mode === 'tape') this.reel += dt * 2.2;
     if (t - this.lastLed >= 1 / 30) { this.lastLed = t; this.drawLed(t); }
     if (t - this.lastDoor >= 1 / 20) { this.lastDoor = t; this.drawDoor(); }
@@ -333,34 +335,14 @@ export class Radio {
 
   }
 
+  /** Upload the grid if it changed (2.5 KB; the shader does the drawing). */
   private paint() {
-    // canvas redraw + texture upload are costly (in Firefox the pixels cross processes): skip if unchanged
-    let same = true;
-    for (let i = 0; i < this.grid.length; i++) if (this.grid[i] !== this.shownGrid[i]) { same = false; break; }
-    if (same) return;
-    this.shownGrid.set(this.grid);
-    const { ctx: x, tex } = this.led;
-    x.drawImage(this.ledBg, 0, 0);
-    const [r, g, b] = LED_RGB;
-    x.fillStyle = `rgb(${r},${g},${b})`;
-    x.beginPath();
+    let changed = false;
     for (let i = 0; i < this.grid.length; i++) {
-      if (!this.grid[i]) continue;
-      const cx = (i % COLS) * DOT + DOT / 2, cy = Math.floor(i / COLS) * DOT + DOT / 2;
-      x.moveTo(cx + 4, cy);
-      x.arc(cx, cy, 4, 0, TAU);
+      const v = this.grid[i] ? 255 : 0;
+      if (this.ledData[i] !== v) { this.ledData[i] = v; changed = true; }
     }
-    x.fill();
-    // LED hot-spots
-    x.fillStyle = 'rgba(235,255,240,0.55)';
-    x.beginPath();
-    for (let i = 0; i < this.grid.length; i++) {
-      if (!this.grid[i]) continue;
-      const cx = (i % COLS) * DOT + DOT / 2, cy = Math.floor(i / COLS) * DOT + DOT / 2;
-      x.rect(cx - 1.5, cy - 1.5, 3, 3);
-    }
-    x.fill();
-    tex.needsUpdate = true;
+    if (changed) this.ledTex.needsUpdate = true;
   }
 
   private set(col: number, row: number) {
@@ -449,22 +431,53 @@ export class Radio {
 
 /* ---------------- static textures ---------------- */
 
-function makeLedBackground() {
-  const c = document.createElement('canvas');
-  c.width = COLS * DOT; c.height = ROWS * DOT;
-  const x = c.getContext('2d')!;
-  x.fillStyle = '#010503';
-  x.fillRect(0, 0, c.width, c.height);
-  const [r, g, b] = LED_RGB;
-  x.fillStyle = `rgba(${r},${g},${b},0.075)`;
-  x.beginPath();
-  for (let row = 0; row < ROWS; row++) for (let col = 1; col < COLS - 1; col++) {
-    if (row === 0 || row === ROWS - 1 || row === 8 || row === 17 || row === 18) continue;
-    const cx = col * DOT + DOT / 2, cy = row * DOT + DOT / 2;
-    x.moveTo(cx + 4, cy); x.arc(cx, cy, 4, 0, TAU);
-  }
-  x.fill();
-  return c;
+/**
+ * Green dot-matrix LED display, drawn per pixel from the grid texture: unlit
+ * ghost dots on the dark panel, lit dots with a pale hot-spot. Shapes are in
+ * layout px (DOT px per cell) and antialiased over the pixel footprint, which
+ * is ~3 layout px here (the display is small on screen).
+ */
+function ledMaterial(grid: THREE.Texture) {
+  // colours stay sRGB-encoded: the layers are blended in sRGB like the old 2D canvas did
+  const srgb = (r: number, g: number, b: number) => new THREE.Vector3(r / 255, g / 255, b / 255);
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      tGrid: { value: grid },
+      uGain: { value: 1.15 },
+      uBg: { value: srgb(1, 5, 3) },
+      uLed: { value: srgb(LED_RGB[0], LED_RGB[1], LED_RGB[2]) },
+      uHot: { value: srgb(235, 255, 240) },
+    },
+    fog: false,
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */`
+      uniform sampler2D tGrid;
+      uniform float uGain;
+      uniform vec3 uBg, uLed, uHot;
+      varying vec2 vUv;
+      float cover(float d, float fw) { return clamp(d / fw + 0.5, 0.0, 1.0); }
+      void main() {
+        vec2 p = vec2(vUv.x * ${COLS * DOT}.0, (1.0 - vUv.y) * ${ROWS * DOT}.0);
+        float fw = max(length(fwidth(p)) * 0.7071, 1e-3);
+        vec2 cell = floor(p / ${DOT}.0);
+        vec2 d = p - (cell + 0.5) * ${DOT}.0;
+        // ghost dots everywhere except the outer columns and the separator rows
+        float ghost = (cell.x < 1.0 || cell.x > ${COLS - 2}.0 || cell.y < 1.0 || cell.y > ${ROWS - 2}.0
+          || cell.y == 8.0 || cell.y == 17.0 || cell.y == 18.0) ? 0.0 : 1.0;
+        float lit = texture2D(tGrid, (cell + 0.5) / vec2(${COLS}.0, ${ROWS}.0)).r;
+        float disc = cover(4.0 - length(d), fw);
+        float hot = cover(1.5 - abs(d.x), fw) * cover(1.5 - abs(d.y), fw);
+        // same layering as the old canvas: panel, ghost dot (7.5 %), lit dot, hot-spot (55 %)
+        vec3 col = mix(uBg, uLed, 0.075 * ghost * disc);
+        col = mix(col, uLed, lit * disc);
+        col = mix(col, uHot, lit * hot * 0.55);
+        // sRGB -> linear (what sampling the sRGB canvas texture did)
+        col = mix(col / 12.92, pow((col + 0.055) / 1.055, vec3(2.4)), step(0.04045, col));
+        gl_FragColor = vec4(col * uGain, 1.0);
+      }`,
+  });
 }
 
 function buttonLabel(text: string, w: number) {
